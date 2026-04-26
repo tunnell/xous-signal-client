@@ -1,0 +1,112 @@
+name: size-delta
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: size-delta-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  delta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      TARGET: riscv32imac-unknown-xous-elf
+      BIN_NAME: xous-signal-client
+      FEATURES: precursor
+      XOUS_CORE_BRANCH: feat/05-curve25519-dalek-4.1.3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: refs
+        run: |
+          git fetch origin ${{ github.base_ref }} --depth=200
+          MB=$(git merge-base origin/${{ github.base_ref }} HEAD)
+          echo "merge_base=$MB" >> $GITHUB_OUTPUT
+          echo "head=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Clone xous-core (required by local path deps in Cargo.toml)
+        run: |
+          git clone --depth=1 \
+            --branch $XOUS_CORE_BRANCH \
+            https://github.com/tunnell/xous-core.git \
+            ${{ github.workspace }}/../xous-core
+          # base/ worktree resolves ../xous-core one level shallower; symlink bridges both
+          ln -s ${{ github.workspace }}/../xous-core ${{ github.workspace }}/xous-core
+
+      - uses: ./.github/actions/setup-xous
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1
+          key: delta-${{ env.TARGET }}
+          workspaces: |
+            . -> target
+            base -> base/target
+          cache-on-failure: "true"
+
+      - name: Build HEAD
+        run: |
+          cargo build --release --locked --target $TARGET \
+            --bin $BIN_NAME --features $FEATURES
+
+      - name: Build merge-base in worktree
+        run: |
+          git worktree add base ${{ steps.refs.outputs.merge_base }}
+          cd base
+          cargo build --release --locked --target $TARGET \
+            --bin $BIN_NAME --features $FEATURES
+
+      - name: Compute and format delta
+        run: |
+          mkdir -p out
+          HEAD_BIN=target/$TARGET/release/$BIN_NAME
+          BASE_BIN=base/target/$TARGET/release/$BIN_NAME
+
+          # LOAD VM totals
+          HEAD_VM=$(riscv64-unknown-elf-readelf -l --wide $HEAD_BIN | \
+              awk '$1=="LOAD"{sum+=strtonum($6)} END{print sum+0}')
+          BASE_VM=$(riscv64-unknown-elf-readelf -l --wide $BASE_BIN | \
+              awk '$1=="LOAD"{sum+=strtonum($6)} END{print sum+0}')
+          DELTA=$((HEAD_VM - BASE_VM))
+          SIGN=$([ $DELTA -ge 0 ] && echo "+" || echo "")
+
+          {
+            echo '<!-- size-delta-marker -->'
+            echo "### Binary size delta — xous-signal-client on Xous"
+            echo
+            printf '| | base | head | delta |\n'
+            printf '|---|---:|---:|---:|\n'
+            printf '| **LOAD VM** | %d B | %d B | **%s%d B** |\n' \
+              $BASE_VM $HEAD_VM $SIGN $DELTA
+            echo
+            echo '<details><summary>Section diff (size -A)</summary>'
+            echo
+            echo '```'
+            echo "--- base (${{ steps.refs.outputs.merge_base }})"
+            riscv64-unknown-elf-size -A $BASE_BIN
+            echo "+++ head (${{ steps.refs.outputs.head }})"
+            riscv64-unknown-elf-size -A $HEAD_BIN
+            echo '```'
+            echo '</details>'
+            echo
+            echo "<sub>base=\`${{ steps.refs.outputs.merge_base }}\` head=\`${{ steps.refs.outputs.head }}\`</sub>"
+          } > out/delta.md
+
+      - uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: size-delta
+          path: out/delta.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: size-delta-artifacts
+          path: out/
+          retention-days: 14

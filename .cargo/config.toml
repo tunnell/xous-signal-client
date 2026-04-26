@@ -1,0 +1,2 @@
+[target.riscv32imac-unknown-xous-elf]
+rustflags = ["--cfg", "getrandom_backend=\"custom\""]

@@ -1,0 +1,119 @@
+name: size-budget
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: size-budget-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  budget:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      TARGET: riscv32imac-unknown-xous-elf
+      BIN_NAME: xous-signal-client
+      FEATURES: precursor
+      XOUS_CORE_BRANCH: feat/05-curve25519-dalek-4.1.3
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone xous-core (required by local path deps in Cargo.toml)
+        run: |
+          git clone --depth=1 \
+            --branch $XOUS_CORE_BRANCH \
+            https://github.com/tunnell/xous-core.git \
+            ${{ github.workspace }}/../xous-core
+
+      - uses: ./.github/actions/setup-xous
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1
+          key: budget-${{ env.TARGET }}
+          cache-on-failure: "true"
+
+      - name: Install cargo-bloat
+        run: cargo install --locked cargo-bloat
+
+      - name: Build for Xous target
+        run: |
+          cargo build --release --locked --target $TARGET \
+            --bin $BIN_NAME --features $FEATURES
+
+      - name: Run budget check
+        id: check
+        run: |
+          python3 .github/scripts/check_size_budget.py \
+            --budget .size-budget.toml \
+            --binary target/$TARGET/release/$BIN_NAME \
+            --target $TARGET \
+            --bin-name $BIN_NAME \
+            --features $FEATURES \
+            --report-md budget-report.md
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request' && (success() || failure())
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: size-budget
+          path: budget-report.md
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: size-budget-report
+          path: budget-report.md
+          retention-days: 30
+
+  i686-sanity:
+    name: i686 sanity build (32-bit pointer-width check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      XOUS_CORE_BRANCH: feat/05-curve25519-dalek-4.1.3
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone xous-core (required by local path deps in Cargo.toml)
+        run: |
+          git clone --depth=1 \
+            --branch $XOUS_CORE_BRANCH \
+            https://github.com/tunnell/xous-core.git \
+            ${{ github.workspace }}/../xous-core
+
+      - name: Set up Rust toolchain with i686 target
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+          targets: i686-unknown-linux-gnu
+
+      - name: Install 32-bit gcc multilib
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y gcc-multilib g++-multilib
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1
+          key: i686-sanity
+          cache-on-failure: "true"
+
+      - name: Build for i686 (32-bit, catches usize/pointer-width bugs)
+        env:
+          # sha2-asm uses R_386_32 absolute relocations incompatible with PIE
+          # (Rust's default relocation model on Linux). Static relocation model
+          # bypasses this for the sanity build; size is not measured here.
+          RUSTFLAGS: "-C relocation-model=static"
+        run: |
+          cargo build --release \
+            --target i686-unknown-linux-gnu \
+            --bin xous-signal-client \
+            --features hosted

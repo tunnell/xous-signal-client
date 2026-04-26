@@ -1,0 +1,122 @@
+[package]
+name = "xous-signal-client"
+version = "0.1.0"
+authors = ["tunnell"]
+edition = "2018"
+description = "Unofficial Signal client for Xous on Precursor"
+
+# Dependency versions enforced by Cargo.lock.
+[dependencies]
+log = "0.4.14"
+num-derive = { version = "0.4", default-features = false }
+num-traits = { version = "0.2.14", default-features = false }
+xous = "0.9.70"
+xous-ipc = "0.10.10"
+log-server = { package = "xous-api-log", version = "0.1.69" }
+ticktimer-server = { package = "xous-api-ticktimer", version = "0.9.70" }
+xous-names = { package = "xous-api-names", version = "0.9.71" }
+gam = { path = "../xous-core/services/gam" }
+blitstr2 = { path = "../xous-core/libs/blitstr2" }
+graphics-server = { path = "../xous-core/services/graphics-server" }
+trng = { path = "../xous-core/services/trng" }
+locales = { path = "../xous-core/locales" }
+ime-plugin-api = { path = "../xous-core/services/ime-plugin-api" }
+ime-plugin-shell = { path = "../xous-core/services/ime-plugin-shell" }
+content-plugin-api = { path = "../xous-core/services/content-plugin-api" }
+codec = { path = "../xous-core/services/codec" }
+com = { path = "../xous-core/services/com" }
+com_rs = { git = "https://github.com/betrusted-io/com_rs", rev = "891bdd3ca8e41f81510d112483e178aea3e3a921" }
+llio = { path = "../xous-core/services/llio" }
+net = { path = "../xous-core/services/net" }
+pddb = { path = "../xous-core/services/pddb" }
+chat = { path = "../xous-core/libs/chat" }
+modals = { path = "../xous-core/services/modals" }
+percent-encoding = "2.2"
+rkyv = { version = "0.8.8", default-features = false, features = ["std", "alloc"] }
+serde = { version = "1.0", features = ["derive"] }
+tls = { path = "../xous-core/libs/tls" }
+tungstenite = "0.21.0"
+url = "2.2.2"
+ring = { version = "=0.17.7" }
+ureq = { version = "=2.9.4", features = ["json"] }
+rustls = { version = "=0.22.2" }
+rustls-webpki = { version = "=0.102.1" }
+sct = { version = "=0.7.1" }
+libsignal-protocol = { git = "https://github.com/signalapp/libsignal", rev = "98915c442d814cd420f4e1a15630ade0d48e66ae", default-features = false }
+async-trait = "0.1"
+rand = "0.9"
+hkdf = "0.12"
+hmac = "0.12"
+sha2 = "0.10"
+aes = "0.8"
+aes-gcm = "0.10"
+cbc = "0.1"
+base64 = "0.22"
+prost = "0.14"
+serde_json = "1.0"
+futures = { version = "0.3", features = ["executor"], default-features = false }
+enumset = "1.1"
+utralib = { version = "0.1.27", optional = true, default-features = false }
+
+# getrandom 0.3 is only used on the Xous target (for the custom backend symbol).
+[target.'cfg(target_os = "xous")'.dependencies]
+getrandom = { version = "0.3", default-features = false }
+
+[features]
+default = []
+precursor = [
+    "blitstr2/precursor",
+    "graphics-server/precursor",
+    "trng/precursor",
+    "ime-plugin-shell/precursor",
+    "codec/precursor",
+    "com/precursor",
+    "llio/precursor",
+    "pddb/precursor",
+    "modals/precursor",
+    "tls/precursor",
+    "gam/precursor",
+    "utralib/precursor-pvt",
+]
+hosted = [
+    # gam/hosted intentionally omitted — see comment carried from sigchat:
+    # forwarding it caused an infinite register_ux lend_mut loop in hosted
+    # mode, indicating an IPC format mismatch between the hosted-mode gam
+    # client and the xtask-built server.
+    "blitstr2/hosted",
+    "graphics-server/hosted",
+    "trng/hosted",
+    "ime-plugin-shell/hosted",
+    "codec/hosted",
+    "com/hosted",
+    "llio/hosted",
+    "net/hosted",
+    "pddb/hosted",
+    "modals/hosted",
+    "tls/hosted",
+]
+
+[patch.crates-io]
+sha2 = { git = "https://github.com/betrusted-io/hashes.git", branch = "sha2-v0.10.8-xous" }
+sha2_legacy = { git = "https://github.com/RustCrypto/hashes.git", tag = "sha2-v0.9.9", package = "sha2" }
+
+[patch.crates-io.aes]
+path = "../xous-core/services/aes"
+
+[patch.crates-io.curve25519-dalek]
+git = "https://github.com/tunnell/curve25519-dalek.git"
+rev = "98a8578bec7ad24f55eb78ab2d327c919791926e"
+
+[patch.crates-io.usb-device]
+git = "https://github.com/betrusted-io/usb-device.git"
+branch = "main"
+
+[patch.crates-io.getrandom]
+path = "imports/getrandom-02"
+
+[patch.crates-io.ring]
+git = "https://github.com/betrusted-io/ring-xous"
+rev = "5f86cb10bebd521a45fb3abb06995200aeda2948"
+
+[patch.crates-io.utralib]
+path = "../xous-core/utralib"

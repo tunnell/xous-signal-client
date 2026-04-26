@@ -1,0 +1,55 @@
+[meta]
+schema_version = 1
+artifact = "target/riscv32imac-unknown-xous-elf/release/xous-signal-client"
+last_updated = 2026-04-26
+note = "Per-crate caps at measured+30% headroom (policy update 2026-04-26). Block on >=30% growth; smaller deltas are reported and accepted. Goal for TOTAL is 1.500 MiB; reductions land via libcrux_ml_kem replacement, rustls removal, panic_immediate_abort."
+
+[budget.total]
+hard = 1572864       # 1.5 MiB — Baosor working-set ceiling per bunnie
+soft_warn = 1415577  # 90% of hard
+# Measured (Phase 2b): 4194304 bytes (4.0 MiB) — 267% of hard. Roadmap: replace
+# libcrux_ml_kem, drop rustls (use xous-core tls), strip eh_frame with
+# panic_immediate_abort.
+
+[budget.sections]
+".text"   = { hard = 3023377 }  # measured=2748524 (sections retain prior +10% headroom)
+".rodata" = { hard = 755059  }  # measured=686417
+".data"   = { hard = 4890    }  # measured=4445
+".bss"    = { hard = 731     }  # measured=664
+
+# Per-crate caps: measured + 30% headroom (Phase 2b policy). Caps recomputed
+# from the post-Phase-2b binary on 2026-04-26.
+
+[budget.crates.libcrux_ml_kem]
+hard = 405504
+# measured=368640 — Bumped from 346.5 to 396 KiB to accommodate Kyber prekey
+# deserialization (Phase 2b 409 recovery). +14 KiB measured. Largest contributor;
+# target for RustCrypto ml-kem replacement.
+
+[budget.crates.xous_signal_client]
+hard = 481280
+# measured=370176 (cap inherited from sigchat post-Phase-2b binary). Re-baseline after first xous-signal-client build.
+
+[budget.crates.std]
+hard = 411648
+# measured=316826
+
+[budget.crates.rustls]
+hard = 341248
+# measured=262553 — second TLS stack alongside xous-core tls; prime reduction target.
+
+[budget.crates.spqr]
+hard = 236544
+# measured=181964 — SPQR post-quantum ratchet; tied to libsignal.
+
+[budget.crates.ring]
+hard = 232448
+# measured=178995
+
+[budget.crates.libsignal_protocol]
+hard = 191488
+# measured=147148
+
+[budget.crates.ureq]
+hard = 182272
+# measured=140186

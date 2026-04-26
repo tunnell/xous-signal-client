@@ -1,0 +1,170 @@
+{
+    "sigchat.account.abort": {
+        "en": "Signal Account setup aborted",
+        "en-tts": "Signal Account setup aborted",
+        "fr": "Signal Account setup aborted *EN*",
+        "ja": "Signal Account setup aborted *EN*",
+        "zh": "Signal Account setup aborted *EN*"
+    },
+    "sigchat.account.failed": {
+        "en": "Failed to setup Signal Account",
+        "en-tts": "Failed to setup Signal Account",
+        "fr": "Failed to setup Signal Account *EN*",
+        "ja": "Failed to setup Signal Account *EN*",
+        "zh": "Failed to setup Signal Account *EN*"
+    },
+    "sigchat.account.host.name": {
+        "en": "Please provide the Signal host server name",
+        "en-tts": "Please provide the Signal host server name",
+        "fr": "Please provide the Signal host server name *EN*",
+        "ja": "Please provide the Signal host server name *EN*",
+        "zh": "Please provide the Signal host server name *EN*"
+    },
+    "sigchat.account.link": {
+        "en": "Link to an existing Signal Account",
+        "en-tts": "Link to an existing Signal Account",
+        "fr": "Link to an existing Signal Account *EN*",
+        "ja": "Link to an existing Signal Account *EN*",
+        "zh": "Link to an existing Signal Account *EN*"
+    },
+    "sigchat.account.link.name": {
+        "en": "Please provide a name for this device",
+        "en-tts": "Please provide a name for this device",
+        "fr": "Please provide a name for this device *EN*",
+        "ja": "Please provide a name for this device *EN*",
+        "zh": "Please provide a name for this device *EN*"
+    },
+    "sigchat.account.link.scan": {
+        "en": "1. Open Signal on your phone\n2. Tap into settings, then tap `Linked Devices`\n3. Tap ⊕ or `Link New Device` and scan",
+        "en-tts": "1. Open Signal on your phone\n2. Tap into settings, then tap `Linked Devices`\n3. Tap ⊕ or `Link New Device` and scan",
+        "fr": "1. Open Signal on your phone\n2. Tap into settings, then tap `Linked Devices`\n3. Tap ⊕ or `Link New Device` and scan *EN*",
+        "ja": "1. Open Signal on your phone\n2. Tap into settings, then tap `Linked Devices`\n3. Tap ⊕ or `Link New Device` and scan *EN*",
+        "zh": "1. Open Signal on your phone\n2. Tap into settings, then tap `Linked Devices`\n3. Tap ⊕ or `Link New Device` and scan *EN*"
+    },
+    "sigchat.account.offline": {
+        "en": "Read Signal offline",
+        "en-tts": "Read Signal offline",
+        "fr": "Read Signal offline *EN*",
+        "ja": "Read Signal offline *EN*",
+        "zh": "Read Signal offline *EN*"
+    },
+    "sigchat.account.register": {
+        "en": "Register a new Signal Account",
+        "en-tts": "Register a new Signal Account",
+        "fr": "Register a new Signal Account *EN*",
+        "ja": "Register a new Signal Account *EN*",
+        "zh": "Register a new Signal Account *EN*"
+    },
+    "sigchat.account.title": {
+        "en": "Setup Signal on this device.",
+        "en-tts": "Setup Signal on this device.",
+        "fr": "Setup Signal on this device. *EN*",
+        "ja": "Setup Signal on this device. *EN*",
+        "zh": "Setup Signal on this device. *EN*"
+    },
+    "sigchat.close.item": {
+        "en": "Close menu",
+        "en-tts": "Close menu",
+        "fr": "Close menu *EN*",
+        "ja": "Close menu *EN*",
+        "zh": "Close menu *EN*"
+    },
+    "sigchat.host.invalid": {
+        "en": "Invalid host format",
+        "en-tts": "Invalid host format",
+        "fr": "Invalid host format *EN*",
+        "ja": "Invalid host format *EN*",
+        "zh": "Invalid host format *EN*"
+    },
+    "sigchat.link": {
+        "en": "Link",
+        "en-tts": "Link",
+        "fr": "Link *EN*",
+        "ja": "Link *EN*",
+        "zh": "Link *EN*"
+    },
+    "sigchat.menu.close": {
+        "en": "Close menu",
+        "en-tts": "Close menu",
+        "fr": "Close menu *EN*",
+        "ja": "Close menu *EN*",
+        "zh": "Close menu *EN*"
+    },
+    "sigchat.number": {
+        "en": "Number",
+        "en-tts": "Number",
+        "fr": "Number *EN*",
+        "ja": "Number *EN*",
+        "zh": "Number *EN*"
+    },
+    "sigchat.number.title": {
+        "en": "Phone Number",
+        "en-tts": "Phone Number",
+        "fr": "Phone Number *EN*",
+        "ja": "Phone Number *EN*",
+        "zh": "Phone Number *EN*"
+    },
+    "sigchat.pddb.warning": {
+        "en": "WARNING: pddb not mounted",
+        "en-tts": "WARNING: pddb not mounted",
+        "fr": "AVERTISSEMENT: pddb pas monté",
+        "ja": "WARNING: pddb not mounted *EN*",
+        "zh": "WARNING: pddb not mounted *EN*"
+    },
+    "sigchat.register": {
+        "en": "Register",
+        "en-tts": "Register",
+        "fr": "Register *EN*",
+        "ja": "Register *EN*",
+        "zh": "Register *EN*"
+    },
+    "sigchat.status.connecting": {
+        "en": "connecting",
+        "en-tts": "connecting",
+        "fr": "connecting *EN*",
+        "ja": "connecting *EN*",
+        "zh": "connecting *EN*"
+    },
+    "sigchat.status.initializing": {
+        "en": "initializing Signal account in pddb",
+        "en-tts": "initializing Signal account in pddb",
+        "fr": "initializing Signal account in pddb *EN*",
+        "ja": "initializing Signal account in pddb *EN*",
+        "zh": "initializing Signal account in pddb *EN*"
+    },
+    "sigchat.status.offline": {
+        "en": "Signal offline",
+        "en-tts": "Signal offline",
+        "fr": "Signal offline *EN*",
+        "ja": "Signal offline *EN*",
+        "zh": "Signal offline *EN*"
+    },
+    "sigchat.status.online": {
+        "en": "Signal online",
+        "en-tts": "Signal online",
+        "fr": "Signal online *EN*",
+        "ja": "Signal online *EN*",
+        "zh": "Signal online *EN*"
+    },
+    "sigchat.status.probing": {
+        "en": "probing host for trusted tls",
+        "en-tts": "probing host for trusted tls",
+        "fr": "probing host for trusted tls *EN*",
+        "ja": "probing host for trusted tls *EN*",
+        "zh": "probing host for trusted tls *EN*"
+    },
+    "sigchat.wifi.connected": {
+        "en": "WiFi connected",
+        "en-tts": "WiFi connected",
+        "fr": "WiFi connecté",
+        "ja": "WiFi connected *EN*",
+        "zh": "WiFi connected *EN*"
+    },
+    "sigchat.wifi.warning": {
+        "en": "WiFi not connected. Entering read-only mode",
+        "en-tts": "WiFi not connected Entering read-only mode",
+        "fr": "WiFi pas connecté",
+        "ja": "WiFi not connected.  Entering read-only mode *EN*",
+        "zh": "WiFi not connected.  Entering read-only mode *EN*"
+    }
+}

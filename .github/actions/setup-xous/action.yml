@@ -1,0 +1,47 @@
+name: "Setup Xous Rust toolchain"
+description: "Pinned stable Rust + sideloaded riscv32imac-unknown-xous-elf libstd"
+inputs:
+  rust-version:
+    description: "Rust toolchain version (used for dtolnay/rust-toolchain and zip filename)"
+    required: true
+    default: "1.95.0"
+  release-tag:
+    description: "betrusted-io/rust release tag (e.g. 1.95.0.1); defaults to rust-version + .1"
+    required: false
+    default: "1.95.0.1"
+runs:
+  using: "composite"
+  steps:
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ inputs.rust-version }}
+        components: rustfmt, clippy, llvm-tools-preview, rust-src
+    - name: Install RISC-V binutils
+      shell: bash
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf
+    - name: Sideload Xous libstd
+      shell: bash
+      env:
+        RUST_VERSION: ${{ inputs.rust-version }}
+        RELEASE_TAG: ${{ inputs.release-tag }}
+      run: |
+        set -euxo pipefail
+        SYSROOT="$(rustc --print sysroot)"
+        TARGET_DIR="$SYSROOT/lib/rustlib/riscv32imac-unknown-xous-elf"
+        if [ ! -d "$TARGET_DIR" ]; then
+          cd "$SYSROOT"
+          # Release tag (e.g. 1.95.0.1) differs from toolchain version (1.95.0)
+          # used in the zip filename. Both inputs are required to form the URL.
+          curl -sSfL -o /tmp/xous-std.zip \
+            "https://github.com/betrusted-io/rust/releases/download/${RELEASE_TAG}/riscv32imac-unknown-xous_${RUST_VERSION}.zip"
+          unzip -o /tmp/xous-std.zip
+          rm /tmp/xous-std.zip
+        fi
+    - name: Set cross-compile env
+      shell: bash
+      run: |
+        echo "CC_riscv32imac_unknown_xous_elf=riscv64-unknown-elf-gcc" >> $GITHUB_ENV
+        echo "AR_riscv32imac_unknown_xous_elf=riscv64-unknown-elf-ar" >> $GITHUB_ENV
+        echo "CFLAGS_riscv32imac_unknown_xous_elf=-march=rv32imac -mabi=ilp32" >> $GITHUB_ENV
