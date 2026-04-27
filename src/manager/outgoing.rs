@@ -52,11 +52,18 @@ pub(crate) const ENVELOPE_PREKEY_BUNDLE: i32 = 3;
 
 // ---- Inline prost definitions (mirror main_ws.rs receive types) ------------
 
+// Per Signal's canonical SignalService.proto, DataMessage.timestamp is at
+// proto field 7 (uint64), not 5. Field 5 is `expireTimer` (uint32). Prior
+// versions emitted timestamp at tag 5, leaving the canonical timestamp
+// field absent on the wire — recipients dropped the message via
+// EnvelopeContentValidator's "Missing timestamp" check.
+//
+// Refs: REPORTS/XOUS-SIGNAL-CLIENT-PHASEA-AUDIT.md (B1).
 #[derive(prost::Message)]
 struct DataMessageProto {
     #[prost(string, optional, tag = "1")]
     body: Option<String>,
-    #[prost(uint64, optional, tag = "5")]
+    #[prost(uint64, optional, tag = "7")]
     timestamp: Option<u64>,
 }
 
@@ -106,6 +113,24 @@ impl std::fmt::Display for OutgoingError {
     }
 }
 
+// ---- [Phase A v5 audit] uncommitted diagnostic dump -----------------------
+
+#[allow(dead_code)]
+fn dump_hex(label: &str, ts: u64, bytes: &[u8]) -> std::io::Result<()> {
+    use std::fmt::Write as _;
+    use std::io::Write as _;
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(hex, "{:02x}", b);
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/xsc-wire-dump.txt")?;
+    writeln!(f, "[{ts}] {label} (len={}): {}", bytes.len(), hex)?;
+    Ok(())
+}
+
 // ---- Padding (inverse of strip_signal_padding in main_ws.rs) ---------------
 
 pub(crate) fn signal_pad(content: &mut Vec<u8>) {
@@ -137,8 +162,25 @@ where
     let content = ContentProto { data_message: Some(dm) };
     let mut content_bytes = content.encode_to_vec();
 
+    // [Phase A v5 audit] uncommitted diagnostic — dump pre-pad bytes.
+    if std::env::var("XSCDEBUG_DUMP").is_ok() {
+        let _ = dump_hex(
+            "Content protobuf (pre-encrypt, pre-pad)",
+            timestamp_ms,
+            &content_bytes,
+        );
+    }
+
     // (2) Pad
     signal_pad(&mut content_bytes);
+
+    if std::env::var("XSCDEBUG_DUMP").is_ok() {
+        let _ = dump_hex(
+            "Padded plaintext (post-pad, pre-encrypt)",
+            timestamp_ms,
+            &content_bytes,
+        );
+    }
 
     // (3) Look up dest_registration_id from the session record.
     let session_record = block_on(session_store.load_session(recipient_addr))
@@ -175,6 +217,19 @@ where
             ));
         }
     };
+
+    if std::env::var("XSCDEBUG_DUMP").is_ok() {
+        let _ = dump_hex(
+            &format!(
+                "Ciphertext (envelope type={}) for {}/{}",
+                ciphertext_type,
+                recipient_addr.name(),
+                u32::from(recipient_addr.device_id()),
+            ),
+            timestamp_ms,
+            &ciphertext_bytes,
+        );
+    }
 
     Ok(EncryptedMessage {
         ciphertext_bytes,

@@ -121,12 +121,13 @@ struct EnvelopeProto {
     content: Option<Vec<u8>>,
 }
 
-// DataMessage (signalservice.proto)
+// DataMessage (signalservice.proto). Timestamp is at proto field 7,
+// not 5 — see outgoing.rs for the symmetric fix and audit reference.
 #[derive(prost::Message)]
 struct DataMessageProto {
     #[prost(string, optional, tag = "1")]
     body: Option<String>,
-    #[prost(uint64, optional, tag = "5")]
+    #[prost(uint64, optional, tag = "7")]
     timestamp: Option<u64>,
 }
 
