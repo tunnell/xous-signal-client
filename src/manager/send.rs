@@ -81,6 +81,8 @@ use url::Url;
 
 use crate::manager::outgoing::{
     EncryptedMessage, OutgoingError, build_encrypted_message_with_stores,
+    build_padded_data_message_content, build_padded_sync_transcript_content,
+    encrypt_padded_for_recipient,
 };
 use crate::manager::stores::{PddbIdentityStore, PddbSessionStore};
 
@@ -508,23 +510,26 @@ impl DeviceSessionEnum for PddbSessionStore {
     }
 }
 
-/// Generic core of the retry loop. Driven by the production wrapper with
-/// pddb-backed stores; driven by tests with `InMemSignalProtocolStore`'s
-/// pieces.
+/// Generic core of the retry loop, parameterized on pre-built padded Content
+/// bytes. Both the recipient send path (DataMessage Content) and the sync
+/// transcript path (SyncMessage Content) drive this same loop with different
+/// `padded_content`.
 ///
-/// On each attempt we enumerate every device for which we have a session
-/// (via `session_store.device_ids_for(uuid)`), encrypt the plaintext for
-/// each, and submit them all in one PUT. On 409/410 we update the local
-/// session set; the next iteration's enumeration picks up the changes
-/// naturally.
+/// On each attempt: enumerate device sessions for `recipient_uuid`, drop the
+/// `excluded_device_id` if any (used by sync to skip self), encrypt the
+/// padded Content for each remaining device, submit them all in one PUT.
+/// 409/410 update the local session set; the next iteration's enumeration
+/// picks up the changes naturally.
 ///
-/// If the enumeration is empty (fresh recipient — never received from), we
-/// fall back to the device_id carried in `recipient_addr`. The 409
-/// round-trip will then add any missing devices.
-pub(crate) fn submit_with_retry_generic<S, I, D>(
-    plaintext: &str,
+/// Returns Ok(true) on a successful submission, Ok(false) when the device
+/// set is empty after exclusion (sync path's "no other devices" outcome —
+/// non-fatal, callers may want to skip rather than retry).
+fn submit_padded_with_retry_generic<S, I, D>(
+    padded_content: &[u8],
     timestamp_ms: u64,
-    recipient_addr: &ProtocolAddress,
+    recipient_uuid: &str,
+    fallback_device_id: u32,
+    excluded_device_id: Option<u32>,
     local_addr: &ProtocolAddress,
     session_store: &mut S,
     identity_store: &mut I,
@@ -532,7 +537,7 @@ pub(crate) fn submit_with_retry_generic<S, I, D>(
     account: &AccountInfo,
     http: &mut dyn HttpClient,
     sleeper: &mut dyn FnMut(Duration),
-) -> Result<(), SendError>
+) -> Result<bool, SendError>
 where
     S: SessionStore + DeviceSessionEnum,
     I: IdentityKeyStore,
@@ -552,12 +557,32 @@ where
         }
         attempt += 1;
 
-        let mut device_ids = session_store.device_ids_for(recipient_addr.name());
+        let mut device_ids = session_store.device_ids_for(recipient_uuid);
+        if let Some(excl) = excluded_device_id {
+            device_ids.retain(|d| *d != excl);
+        }
         if device_ids.is_empty() {
-            device_ids.push(u32::from(recipient_addr.device_id()));
+            // Sync path: no other devices on own account → caller decides.
+            if excluded_device_id.is_some() {
+                return Ok(false);
+            }
+            // Recipient path: fall back to the address's device_id (fresh
+            // recipient, no sessions yet); 409 round-trip will discover
+            // others.
+            device_ids.push(fallback_device_id);
         }
 
-        let mut entities: Vec<OutgoingMessageEntity> = Vec::with_capacity(device_ids.len());
+        let recipient_addr_for_handlers = {
+            let dev = u8::try_from(fallback_device_id)
+                .map_err(|_| SendError::BadResponse(
+                    format!("fallback device id {fallback_device_id} out of range")))
+                .and_then(|d| DeviceId::new(d).map_err(|e|
+                    SendError::BadResponse(format!("DeviceId: {e:?}"))))?;
+            ProtocolAddress::new(recipient_uuid.to_string(), dev)
+        };
+
+        let mut entities: Vec<OutgoingMessageEntity> =
+            Vec::with_capacity(device_ids.len());
         for did in &device_ids {
             let dev = u8::try_from(*did)
                 .map_err(|_| SendError::BadResponse(format!("device id {did} out of range")))
@@ -566,9 +591,9 @@ where
                         SendError::BadResponse(format!("DeviceId: {e:?}"))
                     })
                 })?;
-            let dev_addr = ProtocolAddress::new(recipient_addr.name().to_string(), dev);
-            let enc = build_encrypted_message_with_stores(
-                plaintext,
+            let dev_addr = ProtocolAddress::new(recipient_uuid.to_string(), dev);
+            let enc = encrypt_padded_for_recipient(
+                padded_content,
                 timestamp_ms,
                 &dev_addr,
                 local_addr,
@@ -581,7 +606,7 @@ where
         let n_entities = entities.len();
 
         let outcome = submit_messages(
-            recipient_addr.name(),
+            recipient_uuid,
             entities,
             timestamp_ms,
             account,
@@ -594,7 +619,7 @@ where
                     attempt,
                     device_ids,
                 );
-                return Ok(());
+                return Ok(true);
             }
             AttemptDecision::Mismatch409(body) => {
                 let mm = parse_mismatch(&body)?;
@@ -605,7 +630,7 @@ where
                     n_entities,
                 );
                 handle_mismatched_devices(
-                    recipient_addr,
+                    &recipient_addr_for_handlers,
                     &mm,
                     session_store,
                     identity_store,
@@ -617,7 +642,7 @@ where
             AttemptDecision::Mismatch410(body) => {
                 let mm = parse_mismatch(&body)?;
                 log::info!("send: 410 stale={:?}", mm.stale_devices);
-                handle_stale_devices(recipient_addr, &mm, deleter);
+                handle_stale_devices(&recipient_addr_for_handlers, &mm, deleter);
             }
             AttemptDecision::Backoff => {
                 let delay = backoff(attempt);
@@ -629,8 +654,147 @@ where
     }
 }
 
+/// Recipient send path: thin wrapper over `submit_padded_with_retry_generic`
+/// that builds DataMessage Content bytes from plaintext. Returns Ok(()) on
+/// success.
+pub(crate) fn submit_with_retry_generic<S, I, D>(
+    plaintext: &str,
+    timestamp_ms: u64,
+    recipient_addr: &ProtocolAddress,
+    local_addr: &ProtocolAddress,
+    session_store: &mut S,
+    identity_store: &mut I,
+    deleter: &mut D,
+    account: &AccountInfo,
+    http: &mut dyn HttpClient,
+    sleeper: &mut dyn FnMut(Duration),
+) -> Result<(), SendError>
+where
+    S: SessionStore + DeviceSessionEnum,
+    I: IdentityKeyStore,
+    D: SessionDeleter,
+{
+    let padded = build_padded_data_message_content(plaintext, timestamp_ms);
+    let _delivered = submit_padded_with_retry_generic(
+        &padded,
+        timestamp_ms,
+        recipient_addr.name(),
+        u32::from(recipient_addr.device_id()),
+        None,
+        local_addr,
+        session_store,
+        identity_store,
+        deleter,
+        account,
+        http,
+        sleeper,
+    )?;
+    Ok(())
+}
+
+/// Sync transcript path: builds a SyncMessage::Sent wrapping the original
+/// DataMessage and fans it out to every device of the sender's own account
+/// EXCLUDING the sending device. Returns Ok(()) whether or not anything was
+/// actually delivered (no other devices = nothing to do).
+///
+/// If we have no sessions to other devices of own account, performs an
+/// upfront device discovery via `GET /v2/keys/{own_uuid}/*` and establishes
+/// sessions for the discovered devices. Without this step, the first send
+/// from a fresh-linked secondary would always have an empty fan-out — the
+/// 409 mechanism can establish missing devices but only if the request body
+/// already contains entities for at least one device, which we can't
+/// produce without a session.
+pub(crate) fn submit_sync_transcript_generic<S, I, D>(
+    plaintext: &str,
+    recipient_uuid: &str,
+    timestamp_ms: u64,
+    own_uuid: &str,
+    own_device_id: u32,
+    local_addr: &ProtocolAddress,
+    session_store: &mut S,
+    identity_store: &mut I,
+    deleter: &mut D,
+    account: &AccountInfo,
+    http: &mut dyn HttpClient,
+    sleeper: &mut dyn FnMut(Duration),
+) -> Result<(), SendError>
+where
+    S: SessionStore + DeviceSessionEnum,
+    I: IdentityKeyStore,
+    D: SessionDeleter,
+{
+    // Up-front device discovery if we have no sessions to other devices.
+    let known: Vec<u32> = session_store
+        .device_ids_for(own_uuid)
+        .into_iter()
+        .filter(|d| *d != own_device_id)
+        .collect();
+    if known.is_empty() {
+        match discover_and_establish_account_devices(
+            own_uuid,
+            Some(own_device_id),
+            session_store,
+            identity_store,
+            account,
+            http,
+        ) {
+            Ok(established) if established.is_empty() => {
+                log::info!(
+                    "sync: discovery returned no other devices for {}; transcript skipped",
+                    own_uuid,
+                );
+                return Ok(());
+            }
+            Ok(established) => {
+                log::info!(
+                    "sync: discovered + established sessions for own devices {:?}",
+                    established,
+                );
+            }
+            Err(e) => {
+                log::warn!(
+                    "sync: device discovery failed: {:?} — transcript skipped",
+                    e,
+                );
+                return Ok(());
+            }
+        }
+    }
+
+    let padded = build_padded_sync_transcript_content(
+        recipient_uuid,
+        plaintext,
+        timestamp_ms,
+    );
+    let delivered = submit_padded_with_retry_generic(
+        &padded,
+        timestamp_ms,
+        own_uuid,
+        // Fallback isn't reachable on the sync path — when the device set
+        // is empty after exclusion we early-return `false` rather than
+        // submit. The fallback value here is just a placeholder.
+        own_device_id,
+        Some(own_device_id),
+        local_addr,
+        session_store,
+        identity_store,
+        deleter,
+        account,
+        http,
+        sleeper,
+    )?;
+    if delivered {
+        log::info!("sync: transcript delivered to own-account devices");
+    } else {
+        log::info!("sync: no other devices on own account; transcript skipped");
+    }
+    Ok(())
+}
+
 /// Production retry-loop driver: uses the concrete pddb-backed stores and
-/// `std::thread::sleep` for backoff.
+/// `std::thread::sleep` for backoff. Sends the recipient DataMessage AND,
+/// on success, fans out a SyncMessage::Sent transcript to the sender's own
+/// other devices. Sync transcript failure is non-fatal.
 pub(crate) fn submit_with_retry_with_stores(
     plaintext: &str,
     timestamp_ms: u64,
@@ -658,6 +822,7 @@ pub(crate) fn submit_with_retry_with_stores(
     pddb_del.try_mount();
     let mut deleter = PddbDeleter { pddb: pddb_del };
     let mut sleeper = |d: Duration| std::thread::sleep(d);
+
     submit_with_retry_generic(
         plaintext,
         timestamp_ms,
@@ -669,7 +834,30 @@ pub(crate) fn submit_with_retry_with_stores(
         account,
         http,
         &mut sleeper,
-    )
+    )?;
+
+    // Recipient PUT succeeded. Fan out the sync transcript to our own
+    // account's other devices. Failure here is non-fatal: the recipient
+    // already has the message, the sender's primary just won't see it
+    // mirrored to its outgoing thread.
+    let sync_result = submit_sync_transcript_generic(
+        plaintext,
+        recipient_addr.name(),
+        timestamp_ms,
+        &account.aci_service_id,
+        account.device_id,
+        local_addr,
+        session_store,
+        identity_store,
+        &mut deleter,
+        account,
+        http,
+        &mut sleeper,
+    );
+    if let Err(e) = sync_result {
+        log::warn!("sync: transcript failed (non-fatal): {e:?}");
+    }
+    Ok(())
 }
 
 fn backoff(attempt: u32) -> Duration {
@@ -754,6 +942,76 @@ where
         }
     }
     Ok(())
+}
+
+/// Proactively fetch prekey bundles for all devices of an account and
+/// establish sessions for each (excluding `excluded_device_id`, used by the
+/// sync transcript path to skip the sender's own device).
+///
+/// Used at the start of the sync transcript path when we have no sessions
+/// to any of our own account's other devices yet — the 409 mechanism would
+/// otherwise establish them lazily, but Signal-Server requires the request
+/// body to address at least the primary device, so we need at least one
+/// session up front.
+///
+/// Endpoint: `GET /v2/keys/{uuid}/*` returns a PreKeyResponse with one
+/// DeviceEntry per registered device of the account.
+fn discover_and_establish_account_devices<S, I>(
+    account_uuid: &str,
+    excluded_device_id: Option<u32>,
+    session_store: &mut S,
+    identity_store: &mut I,
+    account: &AccountInfo,
+    http: &mut dyn HttpClient,
+) -> Result<Vec<u32>, SendError>
+where
+    S: SessionStore,
+    I: IdentityKeyStore,
+{
+    let url = {
+        let mut u = account.chat_base_url()?;
+        u.set_path(&format!("/v2/keys/{}/*", account_uuid));
+        u
+    };
+    let auth = account.basic_auth();
+    let resp = http
+        .get_json(url.as_str(), &auth)
+        .map_err(|e| SendError::Transport(format!("discover devices: {e}")))?;
+    match resp.status {
+        200 => {}
+        401 => return Err(SendError::AuthFailed),
+        404 => return Ok(Vec::new()),
+        other => return Err(SendError::Unexpected(other)),
+    }
+
+    let pre: PreKeyResponse = serde_json::from_slice(&resp.body)
+        .map_err(|e| SendError::BadResponse(format!("discover prekey parse: {e}")))?;
+
+    let identity_key = decode_identity_key(&pre.identity_key)?;
+    let mut established = Vec::new();
+    for entry in &pre.devices {
+        if Some(entry.device_id) == excluded_device_id {
+            continue;
+        }
+        let bundle = build_prekey_bundle(entry, identity_key)?;
+        let dev_addr = device_protocol_address(account_uuid, entry.device_id)
+            .ok_or_else(|| SendError::BadResponse(format!(
+                "device id {} out of range", entry.device_id)))?;
+        let mut rng = rand::rngs::OsRng.unwrap_err();
+        block_on(process_prekey_bundle(
+            &dev_addr,
+            session_store,
+            identity_store,
+            &bundle,
+            std::time::SystemTime::now(),
+            &mut rng,
+        ))
+        .map_err(|e| SendError::BadResponse(format!(
+            "discover process_prekey_bundle for {}/{}: {e:?}",
+            account_uuid, entry.device_id)))?;
+        established.push(entry.device_id);
+    }
+    Ok(established)
 }
 
 fn process_one_prekey_bundle<S, I>(
@@ -1922,7 +2180,7 @@ mod tests {
 
         fn get_json(&mut self, url: &str, _auth: &str) -> io::Result<HttpResponse> {
             *self.get_count.borrow_mut() += 1;
-            // /v2/keys/{uuid}/{device_id}
+            // /v2/keys/{uuid}/{device_id|*}
             let tail = url
                 .split("/v2/keys/")
                 .nth(1)
@@ -1931,11 +2189,46 @@ mod tests {
             let uuid = parts
                 .next()
                 .ok_or_else(|| io::Error::other("missing uuid"))?;
-            let dev: u32 = parts
+            let selector = parts
                 .next()
-                .and_then(|s| s.parse().ok())
-                .ok_or_else(|| io::Error::other("missing device_id"))?;
+                .ok_or_else(|| io::Error::other("missing device selector"))?;
 
+            // Wildcard returns the merged response across all registered
+            // devices (one PreKeyResponse with multiple `devices` entries).
+            // Mirrors Signal-Server's GET /v2/keys/{uuid}/* shape.
+            if selector == "*" {
+                let devices = self.registered.get(uuid);
+                let entries = match devices {
+                    Some(v) if !v.is_empty() => v,
+                    _ => return Ok(HttpResponse { status: 404, body: vec![] }),
+                };
+                let mut all_entries: Vec<serde_json::Value> = Vec::new();
+                let mut identity_key_b64: Option<String> = None;
+                for d in entries {
+                    let resp: serde_json::Value =
+                        serde_json::from_slice(&d.prekey_response_body).unwrap();
+                    if identity_key_b64.is_none() {
+                        identity_key_b64 = resp["identityKey"].as_str().map(|s| s.to_string());
+                    }
+                    if let Some(devs) = resp["devices"].as_array() {
+                        for entry in devs {
+                            all_entries.push(entry.clone());
+                        }
+                    }
+                }
+                let body = serde_json::json!({
+                    "identityKey": identity_key_b64.unwrap_or_default(),
+                    "devices": all_entries,
+                });
+                return Ok(HttpResponse {
+                    status: 200,
+                    body: serde_json::to_vec(&body).unwrap(),
+                });
+            }
+
+            let dev: u32 = selector
+                .parse()
+                .map_err(|_| io::Error::other(format!("bad selector {selector}")))?;
             let bundle = self
                 .registered
                 .get(uuid)
@@ -2160,5 +2453,144 @@ mod tests {
             1,
             "expected exactly one delete for bob/2 on 410"
         );
+    }
+
+    // ---- sync transcript fan-out (Phase A v7) ------------------------------
+
+    /// `submit_sync_transcript_generic` must:
+    ///   - target the sender's own UUID (PUT URL contains own_uuid)
+    ///   - exclude own_device_id from the fan-out device set
+    ///   - include all OTHER devices of own UUID
+    ///   - emit a SyncMessage Content (not a DataMessage Content) inside
+    ///     each per-device ciphertext
+    /// We can't decrypt the ciphertext through MockHttp, but we can verify
+    /// the device set the PUT addresses, and that the only PUT is to
+    /// own_uuid (no recipient PUT).
+    #[test]
+    fn sync_transcript_fans_out_to_own_other_devices() {
+        // Alice (own account) has a session with herself's other device 7.
+        // Sender device_id = 1 (the linked secondary doing the send).
+        // Own account UUID = "alice-uuid". Recipient is irrelevant in this
+        // direct test (we drive submit_sync_transcript_generic directly).
+        let mut alice = fresh_lib_store();
+        let alice_self_other_addr =
+            ProtocolAddress::new("alice-uuid".into(), DeviceId::new(7).unwrap());
+
+        // Pre-establish Alice → Alice/7 session (own-account other device).
+        let mut alice_other = fresh_lib_store();
+        let alice_other_bundle =
+            make_bundle(&mut alice_other, DeviceId::new(7).unwrap());
+        let mut rng = OsRng.unwrap_err();
+        block_on(libsignal_protocol::process_prekey_bundle(
+            &alice_self_other_addr,
+            &mut alice.session_store,
+            &mut alice.identity_store,
+            &alice_other_bundle,
+            std::time::SystemTime::now(),
+            &mut rng,
+        ))
+        .unwrap();
+
+        let local_addr =
+            ProtocolAddress::new("alice-uuid".into(), DeviceId::new(1).unwrap());
+
+        let mut http = StatefulMockHttp::new();
+        // Real Signal-Server excludes the requesting device from its 409
+        // "mismatched devices" calculation when receiving a sync transcript
+        // PUT, so the mock only registers the OTHER devices of own UUID.
+        let alice_identity =
+            block_on(alice.get_identity_key_pair()).unwrap();
+        let dev7 = make_registered_device(
+            &mut fresh_lib_store(),
+            &alice_identity,
+            7,
+        );
+        http.register_device("alice-uuid", dev7);
+
+        let mut deleter = CountingDeleter::new();
+        let mut sleeper = no_sleep();
+        let mut tracker = TrackingSessionStore::new(
+            &mut alice.session_store,
+            &[("alice-uuid", 7)],
+        );
+
+        let r = submit_sync_transcript_generic(
+            "hello sync",
+            "bob-uuid",          // recipient UUID echoed inside the transcript
+            1_700_000_000_000,
+            "alice-uuid",        // own UUID (PUT target)
+            1,                   // own device id (excluded)
+            &local_addr,
+            &mut tracker,
+            &mut alice.identity_store,
+            &mut deleter,
+            &fake_account(),
+            &mut http,
+            &mut sleeper,
+        );
+        if let Err(e) = &r {
+            panic!("submit_sync_transcript_generic failed: {:?}", e);
+        }
+
+        // Exactly one PUT, to alice-uuid, addressing only device 7.
+        assert_eq!(*http.put_count.borrow(), 1);
+        let put = http.last_put_body.borrow().clone().expect("a PUT happened");
+        let req: serde_json::Value = serde_json::from_slice(&put).unwrap();
+        let device_ids: Vec<u32> = req["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["destinationDeviceId"].as_u64().unwrap() as u32)
+            .collect();
+        assert_eq!(
+            device_ids,
+            vec![7u32],
+            "sync PUT must address own-other devices excluding self"
+        );
+    }
+
+    /// When the sender's own account has no devices other than the sender
+    /// itself, the sync transcript path must short-circuit without any PUT.
+    #[test]
+    fn sync_transcript_skipped_when_own_account_has_no_other_devices() {
+        let mut alice = fresh_lib_store();
+        let local_addr =
+            ProtocolAddress::new("alice-uuid".into(), DeviceId::new(1).unwrap());
+
+        // No prior sessions for alice-uuid in the tracker.
+        let mut tracker = TrackingSessionStore::new(
+            &mut alice.session_store,
+            &[],
+        );
+
+        let mut http = StatefulMockHttp::new();
+        // Server registration is irrelevant — we shouldn't reach it.
+        let mut deleter = CountingDeleter::new();
+        let mut sleeper = no_sleep();
+
+        let r = submit_sync_transcript_generic(
+            "hello sync",
+            "bob-uuid",
+            1_700_000_000_000,
+            "alice-uuid",
+            1,
+            &local_addr,
+            &mut tracker,
+            &mut alice.identity_store,
+            &mut deleter,
+            &fake_account(),
+            &mut http,
+            &mut sleeper,
+        );
+        if let Err(e) = &r {
+            panic!("expected Ok (no-op), got {:?}", e);
+        }
+        assert_eq!(*http.put_count.borrow(), 0,
+            "no PUT expected when own account has no other devices");
+        // One GET expected: the up-front device discovery
+        // /v2/keys/{own_uuid}/* which the empty-mock returns 404 for,
+        // causing the sync path to skip without further requests.
+        assert_eq!(*http.get_count.borrow(), 1,
+            "one discovery GET expected, no further requests");
     }
 }
