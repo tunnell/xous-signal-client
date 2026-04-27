@@ -73,32 +73,62 @@ else
     DETAIL[rust]="see $RUST_LOG"
 fi
 
-# --- Family 2: Hosted E2E ---
+# --- Family 2a: Hosted E2E send ---
 echo ""
 echo "================================================"
-echo "Family 2: Hosted-mode end-to-end"
+echo "Family 2a: Hosted-mode E2E send"
 echo "================================================"
 if (( SKIP_E2E )); then
-    RESULTS[e2e]="SKIPPED"
-    DETAIL[e2e]="--skip-e2e"
+    RESULTS[send]="SKIPPED"
+    DETAIL[send]="--skip-e2e"
 elif [[ ! -f "$ROOT/tools/.env" ]]; then
-    RESULTS[e2e]="SKIPPED"
-    DETAIL[e2e]="tools/.env not configured (see tools/test-env.example)"
+    RESULTS[send]="SKIPPED"
+    DETAIL[send]="tools/.env not configured (see tools/test-env.example)"
 elif ! command -v signal-cli &>/dev/null; then
-    RESULTS[e2e]="SKIPPED"
-    DETAIL[e2e]="signal-cli not installed"
+    RESULTS[send]="SKIPPED"
+    DETAIL[send]="signal-cli not installed"
 else
     if "$SCRIPT_DIR/scan-send.sh"; then
-        RESULTS[e2e]="PASS"
-        DETAIL[e2e]="post: sent observed; verify via decode-wire.sh + phones"
+        RESULTS[send]="PASS"
+        DETAIL[send]="post: sent observed; verify via decode-wire.sh + phones"
     else
         RC=$?
         if (( RC == 2 )); then
-            RESULTS[e2e]="SKIPPED"
-            DETAIL[e2e]="setup failure in scan-send.sh"
+            RESULTS[send]="SKIPPED"
+            DETAIL[send]="setup failure in scan-send.sh"
         else
-            RESULTS[e2e]="FAIL"
-            DETAIL[e2e]="scan-send.sh exit $RC"
+            RESULTS[send]="FAIL"
+            DETAIL[send]="scan-send.sh exit $RC"
+        fi
+    fi
+fi
+
+# --- Family 2b: Hosted E2E receive ---
+echo ""
+echo "================================================"
+echo "Family 2b: Hosted-mode E2E receive"
+echo "================================================"
+if (( SKIP_E2E )); then
+    RESULTS[recv]="SKIPPED"
+    DETAIL[recv]="--skip-e2e"
+elif [[ ! -f "$ROOT/tools/.env" ]]; then
+    RESULTS[recv]="SKIPPED"
+    DETAIL[recv]="tools/.env not configured (see tools/test-env.example)"
+elif ! command -v signal-cli &>/dev/null; then
+    RESULTS[recv]="SKIPPED"
+    DETAIL[recv]="signal-cli not installed"
+else
+    if "$SCRIPT_DIR/scan-receive.sh"; then
+        RESULTS[recv]="PASS"
+        DETAIL[recv]="marker received and decrypted by emulator"
+    else
+        RC=$?
+        if (( RC == 2 )); then
+            RESULTS[recv]="SKIPPED"
+            DETAIL[recv]="setup failure in scan-receive.sh"
+        else
+            RESULTS[recv]="FAIL"
+            DETAIL[recv]="scan-receive.sh exit $RC"
         fi
     fi
 fi
@@ -155,7 +185,7 @@ echo ""
 echo "================================================"
 echo "Summary"
 echo "================================================"
-for fam in rust e2e footprint; do
+for fam in rust send recv footprint; do
     printf "  %-12s %-8s %s\n" \
         "${fam}:" "${RESULTS[$fam]:-?}" "${DETAIL[$fam]:-}"
 done
