@@ -1,0 +1,416 @@
+# Testing xous-signal-client
+
+This document describes the testing methodology used in this project
+and how to run all three test families. The methodology section is
+not boilerplate — the project's bug history has shaped which test
+families exist and what each one is responsible for catching. Read
+it before contributing tests.
+
+For the per-check verification discipline that gates every commit
+(build, size, i686 sanity, Renode boot smoke, reporting), see
+[`TESTING-PLAN.md`](../TESTING-PLAN.md) at the repository root. This
+document is the higher-level story that frames why those checks
+exist; `TESTING-PLAN.md` is the operational checklist.
+
+## Quick start
+
+Run everything:
+
+```
+./tools/run-all-tests.sh
+```
+
+The orchestrator runs three test families in order: Rust unit/
+integration tests, hosted-mode end-to-end, and memory footprint
+(static size + Renode boot smoke). Families whose prerequisites
+aren't met (no `tools/.env`, no `signal-cli`, no `renode`) are
+reported as **SKIPPED** rather than treated as failures. The exit
+code reflects whether all families that COULD run actually passed.
+
+Skip flags are available for selective runs:
+
+```
+./tools/run-all-tests.sh --skip-e2e         # rust + footprint only
+./tools/run-all-tests.sh --skip-footprint   # rust + e2e
+./tools/run-all-tests.sh --skip-renode      # static size only in family 3
+```
+
+### From a fresh clone
+
+1. Install the Rust toolchain xous-core uses (see `xous-core`'s
+   own README for the pinned toolchain). The project pins to
+   `feat/05-curve25519-dalek-4.1.3` of `tunnell/xous-core` for path
+   dependencies — see `TESTING-PLAN.md` Pre-flight.
+2. (Optional, for E2E) Install `signal-cli`, set up two test Signal
+   accounts, link them, and populate `tools/.env`. See
+   `tools/test-env.example` for the configuration template.
+3. (Optional, for footprint) Install the riscv64 binutils
+   (`riscv64-unknown-elf-size`, `-readelf`) and `cargo-bloat`. For
+   the Renode boot smoke, install Renode v1.16.1 or later.
+4. `./tools/run-all-tests.sh`
+
+## Testing methodology
+
+Three test families exist because no single one catches every class
+of bug this project has encountered. The Phase A protocol-debugging
+arc — four bugs across four sessions in the outbound 1:1 send path —
+demonstrated this directly. Each principle below is grounded in a
+bug we actually shipped and had to fix.
+
+### Mocks must simulate real-server behavior, not just wire format
+
+The earliest send-path tests used a canned-response queue: a request
+came in, a pre-programmed response came back. The shape was
+correct, the response codes were plausible, and 39 unit tests
+passed. A real send to `chat.signal.org` failed immediately because
+Signal-Server's prekey-bundle responses are unpadded base64
+(Java's `Base64.getEncoder().withoutPadding()`), and our
+`STANDARD.decode` rejected them. The mock had been padded.
+
+The fix introduced `StatefulMockHttp`. Instead of canned responses,
+the mock tracks the registered device set for an account UUID, and
+its 409 response is computed dynamically from the symmetric
+difference between the registered set and the device set in the
+request body. A second bug — encrypting only for the original
+recipient device on every retry, never picking up the missing
+device the 409 told us about — would have passed canned-response
+mocks forever, but is caught deterministically by the stateful
+mock.
+
+Principle: **a mock that doesn't react like the real server can pass
+arbitrarily many tests while leaving production broken in ways the
+tests cannot see.**
+
+### Self-consistent encoders pass tests by being bidirectionally wrong
+
+The `DataMessage.timestamp` field on the wire is `tag = 7` per
+canonical `SignalService.proto`. Tag 5 in that proto is
+`expireTimer (uint32)` — a different field, a different type. The
+hand-rolled prost definition in this project had `timestamp` at
+tag 5, in both the send-side `DataMessageProto` and the
+symmetric receive-side definition.
+
+All 65 unit tests passed. The receive-path round-trip tests passed
+because the project's own decoder also read tag 5; sender and
+receiver agreed on a non-canonical wire format. iPhone Signal's
+`EnvelopeContentValidator` rejects DataMessages without timestamp at
+tag 7 and silently drops the message at content validation —
+invisible from the sender's side. signal-cli (used in this
+project's E2E loop) surfaces the rejection as
+`Invalid content! [DataMessage] Missing timestamp!`, which is how
+the bug was eventually caught.
+
+Principle: **self-consistent encoder/decoder pairs pass tests
+forever. Validation against a canonical reference — either a real
+client's parser, or `protoc --decode_raw` against the canonical
+`.proto` — is the only way to catch this class of bug.** Family 2
+(hosted E2E with signal-cli verify) and `tools/decode-wire.sh`
+(canonical proto field-tag check) exist because of this.
+
+### The three-legged stool of verification
+
+A `200 OK` from `PUT /v1/messages` proves the server accepted the
+ciphertext. It does not prove anything was delivered, decrypted,
+or rendered. Three sessions in the Phase A arc declared "send
+works" based on log lines that read:
+
+```
+INFO: post: sent to <recipient-uuid>
+```
+
+None of those messages reached a recipient phone. Recipients
+silently dropped them at content validation (the timestamp tag-5
+bug above), or the retry loop never actually addressed the missing
+device, or signal-cli's libsignal returned `invalid Whisper
+message: decryption failed` and we read its decision-receipt
+envelope as proof of delivery.
+
+The verification rule the project now uses has three legs:
+
+1. **Wire bytes** match the canonical Signal protobuf format —
+   verified offline via `tools/decode-wire.sh` against a captured
+   `XSCDEBUG_DUMP=1` trace.
+2. **Recipient parse** succeeds at the protocol layer — verified by
+   `signal-cli receive` showing `Body: <text>` for a non-sealed
+   recipient.
+3. **User-visible confirmation** — a phone or another Signal client
+   shows the message as the user expects (incoming on the
+   recipient's primary device, outgoing on the sender's primary via
+   sync transcript).
+
+Family 2 (hosted E2E) covers legs 1 and 2 automatically. Leg 3 is
+human, by design — there is no automated substitute for "I see the
+message in my Signal app." Sessions that declare success without
+all three legs are wrong until proven otherwise.
+
+### Stateful protocols need stateful test doubles
+
+Signal's multi-device fan-out is a stateful protocol. The sender
+must encrypt one ciphertext per device of the recipient's account;
+the server returns 409 with `missingDevices` and `extraDevices` if
+the body's device list doesn't match the account's actual device
+list; the sender then fetches prekey bundles for missing devices,
+processes them to establish sessions, drops sessions for extras,
+and retries with the new device list.
+
+A mock that returns one canned 409 followed by 200 misses the
+retry-and-re-enumerate logic. The session store changes between
+attempts; the device list changes between attempts; the new list
+must come from session enumeration on each iteration, not from a
+captured value at the top of the loop. Several variants of the
+single-device-retry bug existed in this codebase and slipped
+through canned-response tests for weeks.
+
+`StatefulMockHttp` simulates that behavior: the mock holds a
+registered device set, the 409 it returns reflects the actual
+diff against the registered set, and a subsequent retry is
+checked against the same state. Adding new bug classes is then a
+matter of registering a different device set in setup, not adding
+a new canned response.
+
+### Diagnostic instrumentation belongs in the codebase
+
+`XSCDEBUG_DUMP=1` is an environment-variable-guarded hex log of the
+Content protobuf, padded plaintext, and per-device ciphertexts in
+`src/manager/outgoing.rs`. It was first written as an uncommitted
+patch during a wire-byte audit, removed, then re-added the next
+session for the next bug, then removed again, and finally
+committed.
+
+When ad-hoc audit instrumentation isn't in the repository, every
+new protocol-correctness investigation pays the cost of writing
+it. When it is, future sessions can `XSCDEBUG_DUMP=1 ./run.sh`
+and feed the result to `tools/decode-wire.sh`. The runtime cost
+when not enabled is one environment variable check per send.
+
+Principle: **diagnostic infrastructure that has paid off twice
+should be committed.**
+
+### Real-server testing has costs that mock testing avoids
+
+Hosted-mode E2E tests cannot run in CI without exposing account
+credentials. They send real traffic on a real network, are subject
+to rate limits, and require human verification of leg 3. They take
+2–5 minutes per run vs. ~30 seconds for the Rust family. For
+day-to-day development, the Rust family catches most regressions;
+hosted E2E is the gate before declaring a protocol change complete.
+
+This project's split is:
+
+- **Family 1** (Rust): runs every commit, in CI, deterministically.
+- **Family 2** (hosted E2E): runs locally before opening a PR for a
+  protocol-touching change. Not in CI.
+- **Family 3** (footprint): runs in CI for static size; Renode boot
+  smoke runs locally on an ad-hoc basis.
+
+## Test families
+
+### Family 1: Rust unit and integration tests
+
+**Run:**
+```
+cargo test --features hosted
+```
+
+**Validates:** protocol-level logic against in-process mocks.
+Includes the multi-device fan-out logic, 409 / 410 retry handling,
+sync transcript construction (`SyncMessage::Sent`), sealed-sender
+encryption wrapping, ISO-7816 padding, the unpadded-base64 codec,
+and canonical proto field-tag conformance for the round-trip path.
+
+**Does not validate:** real-server behavior, real cryptographic
+round-trips against a different libsignal implementation, or the
+UI. Per the methodology section, self-consistent encoder bugs and
+mock/server divergences pass this family and require Family 2.
+
+**Where the tests live:** inline `#[cfg(test)] mod tests` modules
+at the bottom of source files (idiomatic Rust). The current
+inventory includes 65 tests across `manager::send`,
+`manager::outgoing`, `manager::rest`, `manager::ws_server`, and
+`manager::stores`.
+
+### Family 2: Hosted-mode end-to-end tests
+
+This is the manual end-to-end loop exercised before declaring a
+protocol-touching change ready to ship. The tooling automates the
+emulator drive, wire capture, and signal-cli verify; the human
+confirms leg 3 via Signal apps on physical phones.
+
+**Setup (one-time):**
+
+1. Pick two Signal accounts you control. They must be different
+   phone numbers.
+2. Link `signal-cli` as a secondary device on the recipient
+   account:
+   ```
+   signal-cli link -n "test-cli-link"
+   # Scan the printed tsdevice:// URL from your phone's Signal app
+   # under Settings > Linked devices.
+   signal-cli -a <recipient_number> listDevices
+   # Verify two devices: phone (primary) + this signal-cli link.
+   ```
+3. Link xous-signal-client as a secondary device on the sender
+   account, and capture a PDDB snapshot of the linked state. The
+   linking flow is in DEVELOPMENT-PLAN.md / Task 6b history; the
+   snapshot lives at
+   `xous-core/tools/pddb-images/hosted-linked-display-verified.bin`
+   by default.
+4. Copy the env template and fill in your values:
+   ```
+   cp tools/test-env.example tools/.env
+   $EDITOR tools/.env
+   ```
+
+**Run a send test:**
+
+```
+./tools/scan-send.sh                # sends "Test"
+./tools/scan-send.sh "Hello world"  # custom text
+```
+
+The script restores the linked PDDB snapshot, boots Xous in hosted
+mode, navigates the emulator UI, types the message, presses Enter,
+and watches the scan log for `post: sent to ...` (success) or
+`RetryExhausted` / `send failed` (failure). Wire bytes are
+captured to `/tmp/xsc-wire-dump.txt` via the `XSCDEBUG_DUMP=1`
+environment variable.
+
+**Verify wire bytes (leg 1):**
+
+```
+./tools/decode-wire.sh
+```
+
+Reports the structure of each captured Content protobuf and runs
+the canonical-tag conformance checks: DataMessage has `body` at
+tag 1 and `timestamp` at tag 7; SyncMessage.Sent has `timestamp`
+at tag 2, the inner DataMessage at tag 3, and `destinationServiceId`
+at tag 7. The script also flags multiple distinct timestamps
+across the captured artifacts — a single send should reuse one
+timestamp value across five wire locations
+(DataMessage.timestamp, sealed-sender envelope timestamp, PUT body
+top-level timestamp, SyncMessage.Sent.timestamp, and the
+sync-wrapped DataMessage.timestamp).
+
+**Verify recipient parse (leg 2):**
+
+After the scan, run `signal-cli -a "$XSC_RECIPIENT_NUMBER"
+receive` on the recipient account. Confirm a line of the form
+`Body: <your test message>`. signal-cli's `--verbose` mode shows
+the full envelope path and is useful for diagnosing partial
+failures (e.g., `org.signal.libsignal.protocol.InvalidMessageException:
+invalid Whisper message: decryption failed` indicates a session-
+state mismatch, distinct from `Missing timestamp!` which indicates
+a content-validation rejection).
+
+**Verify on phone (leg 3):**
+
+Open Signal on both physical phones (sender and recipient
+primaries). Confirm the test message appears: incoming on the
+recipient's phone, outgoing on the sender's phone (delivered via
+the sync transcript).
+
+**Common failure modes:**
+
+| Symptom | Likely cause |
+|---|---|
+| `Missing timestamp!` in signal-cli | DataMessage.timestamp at the wrong proto tag (regression of the v6 bug) |
+| HTTP 401 from `PUT /v1/messages` | UAK or device-credential issue; check `tools/.env` and `signal-cli listDevices` |
+| 409 retry loop never converging | Device enumeration not picking up newly-established sessions (regression of the v4 bug) |
+| Recipient receives, sender phone shows nothing | Sync transcript path failing — check the second Content protobuf in the wire dump and re-run `decode-wire.sh` |
+| `Invalid padding` in scan log | Base64 mode regression (regression of the v3 bug) |
+
+### Family 3: Memory footprint
+
+The Xous-target binary has a documented per-crate, per-section,
+and total budget in `.size-budget.toml`. The CI runs the full
+budget check on every PR (`.github/workflows/size-budget.yml`).
+Locally:
+
+**Run static measurement:**
+
+```
+./tools/measure-size.sh
+```
+
+This builds for `riscv32imac-unknown-xous-elf` (with the
+`precursor` feature) and runs
+`.github/scripts/check_size_budget.py` to report:
+
+- Total LOAD VM (sum of `MemSiz` for all `PT_LOAD` segments) vs
+  hard ceiling (currently 1.5 MiB Baosor working-set ceiling).
+- Section-level (`.text`, `.rodata`, `.data`, `.bss`) measured vs
+  hard.
+- Per-crate `.text` (via `cargo bloat --crates`) vs hard. The
+  per-crate caps are sized at `measured + 30% headroom`; a
+  per-crate breach with growth ≥30% is a stop-the-session
+  regression. Smaller deltas are reported in the session log and
+  proceed (see `TESTING-PLAN.md` Check 2).
+
+**Run Renode boot smoke (optional):**
+
+```
+./tools/measure-renode.sh
+```
+
+Builds a Xous image with xous-signal-client, boots it under Renode
+v1.16.1+ for up to 90 seconds, and checks for:
+
+- Absence of `panic`, `abort`, `fault`, `exception`, or `FATAL` in
+  the boot log.
+- Presence of `INFO:xous_signal_client: ...` (binary reached its
+  event loop).
+
+This is a smoke test, not a per-feature regression. The Renode
+PDDB-format ceremony (`tests/renode/pddb-format.robot`) is a
+separate Robot Framework test invoked via `renode-test`; see
+`tests/renode/README.md` for that workflow. The smoke test exists
+because the alternative — discovering on real hardware that a
+recent change panics during init — is much more expensive.
+
+## Per-family pros and cons
+
+| Family | Pros | Cons |
+|---|---|---|
+| Rust unit/integration | Fast, deterministic, CI-able, covers protocol edge cases | Cannot catch mock/server divergence or self-consistent encoder bugs |
+| Hosted E2E | Validates real-server behavior; catches encoder bugs Rust tests miss | Requires test accounts; sends real traffic; cannot run in CI |
+| Footprint | Catches binary-bloat regressions before hardware testing; static size runs in CI | Static size doesn't capture runtime peak; full validation needs Renode |
+
+## When to run which
+
+- **Every commit (locally):** Family 1. Fast feedback. Also part of
+  `TESTING-PLAN.md` Check 1.
+- **Before declaring a protocol change complete:** Family 2.
+  Required to ship; mock tests are insufficient by design (see
+  methodology, "self-consistent encoders").
+- **Before declaring a memory-affecting change complete:** Family 3.
+  Required if the binary grows.
+- **Before opening a PR:** `./tools/run-all-tests.sh`. Single
+  command, full report.
+
+## Adding new tests
+
+- **Family 1 (Rust):** add `#[test]` functions in the appropriate
+  source file's inline `mod tests`. Prefer `StatefulMockHttp` over
+  canned-response mocks for any test that exercises retry,
+  reconnection, or device enumeration.
+- **Family 2 (E2E):** the framework lives in `tools/`. New
+  scenarios become new helpers in `tools/test-helpers.sh` plus a
+  new top-level driver script. Anonymized configuration goes in
+  `tools/test-env.example`; never commit real account values.
+- **Family 3 (footprint):** new per-crate budgets are added to
+  `.size-budget.toml`. The check script reads `[budget.crates.*]`
+  and applies the listed `hard` ceiling. Caps should be
+  `measured + 30% headroom` per the policy in
+  `.size-budget.toml::meta.note`.
+
+## See also
+
+- [`../TESTING-PLAN.md`](../TESTING-PLAN.md) — operational
+  per-check verification discipline (build, size, i686, Renode
+  boot, report).
+- [`renode/README.md`](renode/README.md) — Renode + Robot Framework
+  test infrastructure (Antmicro pattern).
+- [`../.size-budget.toml`](../.size-budget.toml) — current size
+  budgets and growth policy.
+- `../.github/workflows/size-budget.yml` — CI size check.
