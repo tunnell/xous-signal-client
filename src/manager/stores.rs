@@ -353,6 +353,29 @@ impl PddbSessionStore {
         let key = format!("{}.{}", address.name(), address.device_id());
         let _ = self.pddb.delete_key(self.dict, &key, None);
     }
+
+    /// Enumerate device IDs for which a session exists for `recipient_uuid`.
+    ///
+    /// Keys in the session dict have the format `{uuid}.{device_id}`. We
+    /// list every key in the dict and parse out IDs whose prefix matches.
+    /// Used by the multi-device send path to encrypt the same plaintext
+    /// for every device of a recipient that we have a session with.
+    /// Returns sorted, deduplicated IDs.
+    pub fn device_ids_for(&self, recipient_uuid: &str) -> Vec<u32> {
+        let prefix = format!("{}.", recipient_uuid);
+        let keys = match self.pddb.list_keys(self.dict, None) {
+            Ok(k) => k,
+            Err(_) => return Vec::new(),
+        };
+        let mut ids: Vec<u32> = keys
+            .into_iter()
+            .filter_map(|k| k.strip_prefix(&prefix).map(|s| s.to_string()))
+            .filter_map(|s| s.parse::<u32>().ok())
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
 }
 
 #[async_trait(?Send)]
