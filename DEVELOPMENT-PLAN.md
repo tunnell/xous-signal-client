@@ -4,14 +4,12 @@ The path from current pre-alpha to a working 1:1 Signal client on
 Precursor.
 
 This plan synthesizes three pieces of design research carried over
-from the sigchat fork (now in `docs/research/`):
+from the sigchat fork:
 
 - **UI design** for the 336×536 monochrome conversation-list screen
-  (`docs/research/ui-conversation-list.md`)
 - **Memory budget strategy** to hit 1.5 MiB on Precursor
-  (`docs/research/memory-budget.md`)
 - **Concurrency architecture** for the WebSocket I/O during blocking
-  modals (`docs/research/concurrency-architecture.md`)
+  modals
 
 It also incorporates the UI flow specified by the user for first-run
 linking, the post-link conversation list, and function-key
@@ -153,7 +151,7 @@ driven from on-device UI.
 
 ### Phase C — Conversation list screen (2 weeks)
 
-Per `docs/research/ui-conversation-list.md` and the user's spec.
+Per the UI conversation-list research and the user's spec.
 
 Concrete sub-tasks:
 
@@ -198,7 +196,7 @@ produces a new conversation.
 
 ### Phase D — WebSocket worker thread (1 week)
 
-Per `docs/research/concurrency-architecture.md` (pattern C).
+Per the concurrency-architecture research (pattern C).
 
 Today, sigchat already has `manager::ws_server` with a
 single-purpose-SID worker for the link flow's provisioning WS
@@ -262,7 +260,7 @@ indefinitely; no silent server-side prekey exhaustion.
 
 ### Phase G — Size reduction (3–4 weeks)
 
-Per `docs/research/memory-budget.md`. Target: 1.5 MiB total binary.
+Per the memory-budget research. Target: 1.5 MiB total binary.
 Current: 4.0 MiB.
 
 Proposal A (keep PQXDH, hit 1.5 MiB by other means) is the
@@ -364,12 +362,6 @@ Out of scope until V1 ships:
 
 ## Open questions surfaced during the bootstrap
 
-- The on-disk research docs were re-uploaded by the user during
-  this session. Earlier on-disk candidates (TASK-07-display-ui-
-  design-question, SIGCHAT-memory-profile, TASK-06b-ws-keepalive-
-  design) overlap but don't fully replace the uploaded versions.
-  Future sessions should treat `docs/research/` here as
-  authoritative.
 - Phase A's outcome decides the order of Phases B and C: if the
   rkyv fix needs more work, B/C wait. If it works, B/C can
   proceed in parallel.
