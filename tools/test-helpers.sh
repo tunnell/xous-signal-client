@@ -93,3 +93,45 @@ xsc_fmt_bytes() {
         else { printf "%.2f MiB\n", b / 1024 / 1024 }
     }'
 }
+
+# Verify signal-cli is linked to a given account with at least one
+# expected linked secondary. Per the canonical topology in
+# ~/workdir/ACCOUNT-MAPPING.md, the test harness REQUIRES `signal-cli-test`
+# (or whatever the local signal-cli installation registered itself as)
+# to be present as a linked secondary on the verifying / sending
+# account. Per the hard rule in Phase R+: refuse to run the scan if
+# the expected secondary is absent.
+#
+# Args: account_e164, expected_device_name_substring [, ...]
+# Returns:
+#   0 = signal-cli sees the account AND at least one of the expected
+#       secondaries is in listDevices output
+#   2 = signal-cli doesn't have this account, or no expected secondary
+#       found — caller should exit 2 (setup error)
+xsc_verify_linked_device() {
+    local account="$1"; shift
+    if (( $# == 0 )); then
+        echo "xsc_verify_linked_device: caller must list at least one expected device name" >&2
+        return 64
+    fi
+    local devices
+    devices="$(signal-cli -a "$account" listDevices 2>&1)"
+    local rc=$?
+    if (( rc != 0 )); then
+        echo "signal-cli listDevices failed for $account (rc=$rc):" >&2
+        echo "$devices" | head -5 >&2
+        return 2
+    fi
+    local expected
+    for expected in "$@"; do
+        if grep -q "Name: $expected" <<<"$devices" || \
+           grep -qE "Name:.*$expected" <<<"$devices"; then
+            return 0
+        fi
+    done
+    echo "Expected linked device(s) not found on $account:" >&2
+    printf "  - %s\n" "$@" >&2
+    echo "Actual listDevices output:" >&2
+    echo "$devices" | sed 's/^/  /' >&2
+    return 2
+}

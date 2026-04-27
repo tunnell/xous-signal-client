@@ -233,8 +233,37 @@ inventory includes 65 tests across `manager::send`,
 
 This is the manual end-to-end loop exercised before declaring a
 protocol-touching change ready to ship. The tooling automates the
-emulator drive, wire capture, and signal-cli verify; the human
-confirms leg 3 via Signal apps on physical phones.
+emulator drive, wire capture, signal-cli send/verify, and log
+correlation; the human confirms leg 3 via Signal apps on physical
+phones (only required for the send test's user-visible
+confirmation).
+
+The Family 2 family has TWO sub-tests covering both directions of
+1:1 messaging:
+
+- **Send (`scan-send.sh`):** xous-emulator → signal-cli (+ phone)
+- **Receive (`scan-receive.sh`):** signal-cli → xous-emulator
+
+Both scripts use the same emulator install and the same signal-cli
+install — only the direction of the message flow differs. Both
+scripts run a `signal-cli listDevices` topology check before
+sending anything; if the expected linked secondary isn't present
+they exit 2 (setup error) without doing any work. This is the
+hard guard against the topology confusion that affected several
+earlier sessions.
+
+**Topology (canonical, see `~/workdir/ACCOUNT-MAPPING.md`):**
+
+- Two phone numbers, each on a separate physical phone the user
+  owns.
+- xous-emulator (this hosted binary) is linked as a secondary on
+  the SENDER account (`XSC_SENDER_NUMBER` in `tools/.env`).
+- signal-cli on the dev machine is linked as a secondary on the
+  RECIPIENT account (`XSC_RECIPIENT_NUMBER`), registered with the
+  device name `signal-cli-test`.
+- For the receive test, the roles SWAP: signal-cli is the sender
+  and the emulator is the receiver. The same `tools/.env` values
+  drive both — `scan-receive.sh` swaps internally.
 
 **Setup (one-time):**
 
@@ -243,12 +272,17 @@ confirms leg 3 via Signal apps on physical phones.
 2. Link `signal-cli` as a secondary device on the recipient
    account:
    ```
-   signal-cli link -n "test-cli-link"
-   # Scan the printed tsdevice:// URL from your phone's Signal app
-   # under Settings > Linked devices.
+   signal-cli link -n "signal-cli-test"
+   # Scan the printed tsdevice:// URL from your phone's Signal
+   # app under Settings > Linked devices.
    signal-cli -a <recipient_number> listDevices
-   # Verify two devices: phone (primary) + this signal-cli link.
+   # Verify TWO devices: phone (primary, Name: null) + Name:
+   # signal-cli-test.
    ```
+   The Name string `signal-cli-test` is what the topology check
+   greps for. Use a different name only if you also update
+   `xsc_verify_linked_device` calls in `scan-send.sh` and
+   `scan-receive.sh`.
 3. Link xous-signal-client as a secondary device on the sender
    account, and capture a PDDB snapshot of the linked state. The
    linking flow is in DEVELOPMENT-PLAN.md / Task 6b history; the
@@ -260,6 +294,8 @@ confirms leg 3 via Signal apps on physical phones.
    cp tools/test-env.example tools/.env
    $EDITOR tools/.env
    ```
+   `XSC_SENDER_NUMBER` is the emulator account; `XSC_RECIPIENT_NUMBER`
+   is the signal-cli account.
 
 **Run a send test:**
 
@@ -309,6 +345,42 @@ Open Signal on both physical phones (sender and recipient
 primaries). Confirm the test message appears: incoming on the
 recipient's phone, outgoing on the sender's phone (delivered via
 the sync transcript).
+
+**Run a receive test:**
+
+```
+./tools/scan-receive.sh                # marker contains "Test"
+./tools/scan-receive.sh "Hello world"  # custom marker
+```
+
+The script:
+
+1. Verifies `signal-cli-test` is linked to `XSC_RECIPIENT_NUMBER`.
+2. Restores the linked PDDB snapshot to `hosted.bin`, boots the
+   emulator with `XSCDEBUG_RECV=1`, and waits for
+   `main_ws: authenticated websocket established`.
+3. Calls `signal-cli send -m "<marker> [recv-<TS>]"` from
+   `XSC_RECIPIENT_NUMBER` to `XSC_SENDER_NUMBER`. The
+   `[recv-<TS>]` substring is unique per run, so the grep won't
+   match older log lines that may exist from previous scans.
+4. Watches the emulator log for a `[recv-debug] ...` line
+   (emitted by `main_ws::deliver_data_message` when
+   `XSCDEBUG_RECV=1`) containing the marker substring.
+
+PASS = match within 60s. FAIL with the last 15 `main_ws` log
+lines printed otherwise. Setup errors (topology check failure,
+missing PDDB image) exit 2.
+
+**Receive instrumentation:** `XSCDEBUG_RECV=1` enables a
+structured log line in `main_ws::deliver_data_message` and
+`::deliver_sync_message`:
+
+```
+[recv-debug] kind=data author=<...> ts=<...> body_len=<N> body=<...>
+```
+
+Bodies are NOT logged unless this env var is set; production
+logs remain body-free.
 
 **Common failure modes:**
 
