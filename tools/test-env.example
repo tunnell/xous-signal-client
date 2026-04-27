@@ -1,0 +1,39 @@
+# Test environment configuration for xous-signal-client.
+#
+# Copy this file to tools/.env and fill in your values:
+#     cp tools/test-env.example tools/.env
+#     $EDITOR tools/.env
+#
+# tools/.env is gitignored. Never commit your real account values.
+#
+# Placeholder values use the US fictional number range (+1-555-01XX) and
+# the all-zero UUID, both reserved for documentation. Replace with your
+# own test accounts before running scripts that send real messages.
+
+# Sender account: phone number xous-signal-client is linked to as a
+# secondary device. The primary device is typically a phone you own.
+# Format: E.164 with leading +.
+export XSC_SENDER_NUMBER="+15550100"
+
+# Recipient account: phone number that should receive test messages.
+# signal-cli is linked to this account as a secondary device for receipt
+# verification. Different from the sender. Format: E.164 with leading +.
+export XSC_RECIPIENT_NUMBER="+15550101"
+
+# UUID (ACI) of the recipient account. Some test paths require direct
+# device addressing. Obtain via:
+#   signal-cli -a "$XSC_RECIPIENT_NUMBER" listIdentities
+export XSC_RECIPIENT_UUID="00000000-0000-0000-0000-000000000000"
+
+# Path to xous-core checkout. Required for Renode and hosted-mode runs
+# that build via cargo xtask. Defaults to ../xous-core if unset.
+# export XOUS_CORE_PATH="../xous-core"
+
+# Pddb image used for hosted-mode E2E. Should be a snapshot of a linked
+# xous-signal-client account. Defaults to
+# $XOUS_CORE_PATH/tools/pddb-images/hosted-linked-display-verified.bin.
+# export XSC_PDDB_IMAGE=""
+
+# X11 display where the Xous emulator window appears during hosted-mode
+# scans. Defaults to :10 to match the existing scan harness.
+# export DISPLAY=":10"

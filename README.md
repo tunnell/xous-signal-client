@@ -35,6 +35,20 @@ Then back in `xous-core`:
 
 (or `app-image` for hardware/Renode).
 
+## Testing
+
+The project's testing methodology and how to run all three test
+families (Rust unit/integration, hosted-mode end-to-end, memory
+footprint) are documented in [`tests/README.md`](tests/README.md).
+The methodology section is grounded in the Phase A protocol-
+debugging arc and explains why each family exists. For the per-check
+verification discipline gating individual commits, see
+[`TESTING-PLAN.md`](TESTING-PLAN.md).
+
+To run everything:
+
+    ./tools/run-all-tests.sh
+
 ## Provenance
 
 Built on [chat-lib](https://github.com/betrusted-io/xous-core/tree/main/libs/chat),
