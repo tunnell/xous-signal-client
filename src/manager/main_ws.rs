@@ -654,6 +654,17 @@ fn deliver_data_message(dm: DataMessageProto, author: &str, server_ts: u64, chat
     let ts = dm.timestamp.unwrap_or(server_ts);
     chat::cf_post_add(chat_cid, author, ts, &body);
     log::info!("main_ws: delivered {} chars from {author}", body.len());
+    // Test-only structured trace: when XSCDEBUG_RECV=1 is set, emit
+    // a parseable log line that tools/scan-receive.sh can grep for.
+    // Disabled by default to keep message bodies out of production
+    // logs. Body is logged via {:?} so non-printable characters are
+    // escaped and the line stays single-line.
+    if std::env::var("XSCDEBUG_RECV").as_deref() == Ok("1") {
+        log::info!(
+            "[recv-debug] kind=data author={} ts={} body_len={} body={:?}",
+            author, ts, body.len(), body
+        );
+    }
     true
 }
 
@@ -683,6 +694,12 @@ fn deliver_sync_message(sync: SyncMessageProto, server_ts: u64, chat_cid: CID) -
     let author = format!("\u{2192}{}", &dest[..dest.len().min(8)]);
     chat::cf_post_add(chat_cid, &author, ts, &body);
     log::info!("main_ws: delivered {} chars (sync-sent to {})", body.len(), dest);
+    if std::env::var("XSCDEBUG_RECV").as_deref() == Ok("1") {
+        log::info!(
+            "[recv-debug] kind=sync_sent dest={} ts={} body_len={} body={:?}",
+            dest, ts, body.len(), body
+        );
+    }
     true
 }
 

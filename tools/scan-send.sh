@@ -54,6 +54,20 @@ xsc_require_cmd signal-cli "https://github.com/AsamK/signal-cli/releases" || exi
 xsc_require_cmd cargo || exit 2
 xsc_require_cmd python3 || exit 2
 
+# Topology pre-check (canonical mapping in ~/workdir/ACCOUNT-MAPPING.md).
+# In the send test, signal-cli is the recipient-side verifier. It must
+# be linked as `signal-cli-test` to XSC_RECIPIENT_NUMBER (Precursor1).
+# Refuse to send if the link isn't there — guards against the topology
+# confusion that affected several earlier sessions.
+echo "=== Verifying topology (signal-cli listDevices) ==="
+if ! xsc_verify_linked_device "$XSC_RECIPIENT_NUMBER" \
+        "signal-cli-test" "signal-cli"; then
+    echo "Topology check failed — see ACCOUNT-MAPPING.md." >&2
+    exit 2
+fi
+echo "OK: signal-cli is linked to $XSC_RECIPIENT_NUMBER as a secondary."
+echo ""
+
 XOUS_CORE_PATH="${XOUS_CORE_PATH:-$ROOT/../xous-core}"
 if [[ ! -d "$XOUS_CORE_PATH" ]]; then
     echo "xous-core not found at $XOUS_CORE_PATH" >&2
@@ -85,6 +99,24 @@ echo ""
 
 # Clear any stale wire dump so we know the next one is from this run.
 : >"$WIRE_DUMP"
+
+# Prime the emulator's outgoing recipient by sending a queued inbound
+# from signal-cli. The hosted PDDB snapshots used in this project are
+# captured at a clean linked-account state with no `default.peer` key;
+# without a peer to address, SigChat::post falls through to local-echo.
+# An inbound message decrypts on emulator boot and triggers
+# set_current_recipient, populating default.peer with signal-cli's
+# UUID. The emulator then has somewhere to send our subsequent
+# typed message back.
+echo "=== Priming default.peer via signal-cli ==="
+PRIME_BODY="phase-r-plus prime $TS"
+if signal-cli -a "$XSC_RECIPIENT_NUMBER" send -m "$PRIME_BODY" \
+        "$XSC_SENDER_NUMBER" 2>&1 | head -3; then
+    echo "OK: priming send dispatched"
+else
+    echo "WARN: priming send failed; emulator may local-echo only" >&2
+fi
+echo ""
 
 # Kill any stale Xous emulator.
 pkill -f "xous-kernel" 2>/dev/null || true
