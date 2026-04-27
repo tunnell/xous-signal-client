@@ -53,7 +53,23 @@ use std::io::{self, Read};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::alphabet::STANDARD as STANDARD_ALPHABET;
+use base64::engine::{general_purpose::STANDARD, DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
+use base64::Engine as _;
+
+/// Decoder for base64 fields in Signal-Server JSON responses.
+///
+/// Signal-Server returns prekey-bundle fields (signed_pre_key.signature,
+/// pq_pre_key.signature, identity_key, *.public_key) without `=` padding —
+/// Signal's Java backend uses `Base64.getEncoder().withoutPadding()`. We
+/// accept both padded and unpadded input via `DecodePaddingMode::Indifferent`.
+///
+/// Encoding sites keep using `STANDARD` (padded); padded output is what we
+/// send and is accepted by Signal-Server.
+const PERMISSIVE: GeneralPurpose = GeneralPurpose::new(
+    &STANDARD_ALPHABET,
+    GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
+);
 use futures::executor::block_on;
 use libsignal_protocol::{
     DeviceId, IdentityKey, IdentityKeyStore, KyberPreKeyId, PreKeyBundle, PreKeyId,
@@ -721,12 +737,12 @@ fn build_prekey_bundle(
     .map_err(|e| SendError::BadResponse(format!("DeviceId: {e:?}")))?;
 
     let signed_pub = decode_ec_public(&entry.signed_pre_key.public_key)?;
-    let signed_sig = STANDARD
+    let signed_sig = PERMISSIVE
         .decode(&entry.signed_pre_key.signature)
         .map_err(|e| SendError::BadResponse(format!("signed pk sig b64: {e}")))?;
 
     let kyber_pub = decode_kyber_public(&entry.pq_pre_key.public_key)?;
-    let kyber_sig = STANDARD
+    let kyber_sig = PERMISSIVE
         .decode(&entry.pq_pre_key.signature)
         .map_err(|e| SendError::BadResponse(format!("kyber pk sig b64: {e}")))?;
 
@@ -751,7 +767,7 @@ fn build_prekey_bundle(
 }
 
 fn decode_identity_key(b64: &str) -> Result<IdentityKey, SendError> {
-    let bytes = STANDARD
+    let bytes = PERMISSIVE
         .decode(b64)
         .map_err(|e| SendError::BadResponse(format!("identity key b64: {e}")))?;
     IdentityKey::decode(&bytes)
@@ -759,7 +775,7 @@ fn decode_identity_key(b64: &str) -> Result<IdentityKey, SendError> {
 }
 
 fn decode_ec_public(b64: &str) -> Result<PublicKey, SendError> {
-    let bytes = STANDARD
+    let bytes = PERMISSIVE
         .decode(b64)
         .map_err(|e| SendError::BadResponse(format!("ec pub b64: {e}")))?;
     PublicKey::deserialize(&bytes)
@@ -767,7 +783,7 @@ fn decode_ec_public(b64: &str) -> Result<PublicKey, SendError> {
 }
 
 fn decode_kyber_public(b64: &str) -> Result<kem::PublicKey, SendError> {
-    let bytes = STANDARD
+    let bytes = PERMISSIVE
         .decode(b64)
         .map_err(|e| SendError::BadResponse(format!("kyber pub b64: {e}")))?;
     kem::PublicKey::deserialize(&bytes)
@@ -1594,5 +1610,94 @@ mod tests {
         );
         assert!(r.is_ok(), "expected Ok, got {r:?}");
         assert_eq!(*http.calls.borrow(), 2);
+    }
+
+    // ---- regression: Signal-Server returns unpadded base64 -----------------
+
+    /// `PERMISSIVE` accepts base64 with or without `=` padding. Both should
+    /// decode to identical bytes.
+    #[test]
+    fn permissive_decoder_accepts_both_padding_modes() {
+        // 64 bytes (a typical Ed25519 signature length): encodes to 88 b64
+        // chars with 2 `=` padding bytes — forces non-zero padding count.
+        let raw: Vec<u8> = (0u8..64).collect();
+        let padded = STANDARD.encode(&raw);
+        assert!(padded.ends_with('='), "fixture must be padded");
+        let unpadded: String = padded.trim_end_matches('=').to_string();
+        assert!(!unpadded.ends_with('='));
+
+        let from_padded = PERMISSIVE.decode(&padded).expect("padded decode");
+        let from_unpadded = PERMISSIVE.decode(&unpadded).expect("unpadded decode");
+        assert_eq!(from_padded, raw);
+        assert_eq!(from_unpadded, raw);
+    }
+
+    /// `STANDARD` rejects unpadded input — this is the production bug surfaced
+    /// by the Phase A real-send scan. Locking it in as a test makes the
+    /// `STANDARD` → `PERMISSIVE` swap a regression-tested change rather than
+    /// a behavioural one.
+    #[test]
+    fn standard_rejects_unpadded_input_pre_fix_repro() {
+        let raw: Vec<u8> = (0u8..64).collect();
+        let unpadded: String = STANDARD.encode(&raw).trim_end_matches('=').to_string();
+        let r = STANDARD.decode(&unpadded);
+        assert!(r.is_err(), "STANDARD must reject unpadded input");
+    }
+
+    /// `build_prekey_bundle` with every base64 field unpadded — the exact
+    /// shape Signal-Server returns. Pre-fix this would fail at the first
+    /// `STANDARD.decode` of `signed_pre_key.signature`. With `PERMISSIVE` the
+    /// bundle is constructed successfully and matches a parallel build using
+    /// the raw key material.
+    #[test]
+    fn build_prekey_bundle_accepts_unpadded_signal_server_format() {
+        use libsignal_protocol::{IdentityKeyPair, KeyPair, kem};
+        use rand::Rng;
+        use rand::rngs::OsRng;
+
+        let mut rng = OsRng.unwrap_err();
+        let identity_kp = IdentityKeyPair::generate(&mut rng);
+        let signed_kp = KeyPair::generate(&mut rng);
+        let kyber_kp = kem::KeyPair::generate(kem::KeyType::Kyber1024, &mut rng);
+        let one_time_kp = KeyPair::generate(&mut rng);
+
+        let signed_pub_bytes = signed_kp.public_key.serialize();
+        let signed_sig = identity_kp
+            .private_key()
+            .calculate_signature(&signed_pub_bytes, &mut rng)
+            .unwrap();
+        let kyber_pub_bytes = kyber_kp.public_key.serialize();
+        let kyber_sig = identity_kp
+            .private_key()
+            .calculate_signature(&kyber_pub_bytes, &mut rng)
+            .unwrap();
+
+        // Encode every field with `withoutPadding()` — matching Signal-Server.
+        let unpad = |b: &[u8]| -> String {
+            STANDARD.encode(b).trim_end_matches('=').to_string()
+        };
+
+        let entry = DeviceEntry {
+            device_id: 1,
+            registration_id: rng.random_range(1..16383),
+            signed_pre_key: SignedPreKeyEntry {
+                key_id: 8287829,
+                public_key: unpad(&signed_pub_bytes),
+                signature: unpad(&signed_sig),
+            },
+            pre_key: Some(PreKeyEntry {
+                key_id: 12345,
+                public_key: unpad(&one_time_kp.public_key.serialize()),
+            }),
+            pq_pre_key: KyberPreKeyEntry {
+                key_id: 7418106,
+                public_key: unpad(&kyber_pub_bytes),
+                signature: unpad(&kyber_sig),
+            },
+        };
+
+        let bundle = build_prekey_bundle(&entry, *identity_kp.identity_key())
+            .expect("bundle parses with unpadded base64");
+        assert_eq!(u32::from(bundle.device_id().unwrap()), 1);
     }
 }
