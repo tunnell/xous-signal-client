@@ -67,10 +67,35 @@ struct DataMessageProto {
     timestamp: Option<u64>,
 }
 
+// SyncMessage.Sent (signalservice.proto). Field tags per canonical proto:
+//   destinationE164      = 1   (omitted; we use destinationServiceId)
+//   timestamp            = 2
+//   message              = 3   (DataMessage)
+//   destinationServiceId = 7
+#[derive(prost::Message)]
+struct SentMessageProto {
+    #[prost(uint64, optional, tag = "2")]
+    timestamp: Option<u64>,
+    #[prost(message, optional, tag = "3")]
+    message: Option<DataMessageProto>,
+    #[prost(string, optional, tag = "7")]
+    destination_service_id: Option<String>,
+}
+
+// SyncMessage container. SyncMessage.sent = 1.
+#[derive(prost::Message)]
+struct SyncMessageProto {
+    #[prost(message, optional, tag = "1")]
+    sent: Option<SentMessageProto>,
+}
+
+// Content (signalservice.proto). Content.dataMessage = 1, Content.syncMessage = 2.
 #[derive(prost::Message)]
 struct ContentProto {
     #[prost(message, optional, tag = "1")]
     data_message: Option<DataMessageProto>,
+    #[prost(message, optional, tag = "2")]
+    sync_message: Option<SyncMessageProto>,
 }
 
 // ---- Public types -----------------------------------------------------------
@@ -140,10 +165,88 @@ pub(crate) fn signal_pad(content: &mut Vec<u8>) {
     }
 }
 
-// ---- Generic encrypt over abstract stores (testable without pddb) ----------
+// ---- Content builders ------------------------------------------------------
 
-pub(crate) fn build_encrypted_message_with_stores<S, I>(
+/// Build the padded `Content { dataMessage }` for an outbound text message.
+/// Caller passes the result to `encrypt_padded_for_recipient`.
+pub(crate) fn build_padded_data_message_content(
     plaintext_body: &str,
+    timestamp_ms: u64,
+) -> Vec<u8> {
+    let dm = DataMessageProto {
+        body: Some(plaintext_body.to_string()),
+        timestamp: Some(timestamp_ms),
+    };
+    let content = ContentProto {
+        data_message: Some(dm),
+        sync_message: None,
+    };
+    let mut bytes = content.encode_to_vec();
+    if std::env::var("XSCDEBUG_DUMP").is_ok() {
+        let _ = dump_hex(
+            "Content protobuf (DataMessage, pre-encrypt, pre-pad)",
+            timestamp_ms,
+            &bytes,
+        );
+    }
+    signal_pad(&mut bytes);
+    if std::env::var("XSCDEBUG_DUMP").is_ok() {
+        let _ = dump_hex(
+            "Padded plaintext (DataMessage, post-pad, pre-encrypt)",
+            timestamp_ms,
+            &bytes,
+        );
+    }
+    bytes
+}
+
+/// Build the padded `Content { syncMessage { sent } }` for the sync transcript
+/// that the sender's own account's other devices receive after an outbound
+/// send. Wraps a copy of the original DataMessage; recipient-side service ID
+/// and timestamp echo through.
+pub(crate) fn build_padded_sync_transcript_content(
+    recipient_uuid: &str,
+    plaintext_body: &str,
+    timestamp_ms: u64,
+) -> Vec<u8> {
+    let inner_dm = DataMessageProto {
+        body: Some(plaintext_body.to_string()),
+        timestamp: Some(timestamp_ms),
+    };
+    let sent = SentMessageProto {
+        timestamp: Some(timestamp_ms),
+        message: Some(inner_dm),
+        destination_service_id: Some(recipient_uuid.to_string()),
+    };
+    let sync = SyncMessageProto { sent: Some(sent) };
+    let content = ContentProto {
+        data_message: None,
+        sync_message: Some(sync),
+    };
+    let mut bytes = content.encode_to_vec();
+    if std::env::var("XSCDEBUG_DUMP").is_ok() {
+        let _ = dump_hex(
+            "Content protobuf (SyncMessage::Sent, pre-encrypt, pre-pad)",
+            timestamp_ms,
+            &bytes,
+        );
+    }
+    signal_pad(&mut bytes);
+    if std::env::var("XSCDEBUG_DUMP").is_ok() {
+        let _ = dump_hex(
+            "Padded plaintext (SyncMessage::Sent, post-pad, pre-encrypt)",
+            timestamp_ms,
+            &bytes,
+        );
+    }
+    bytes
+}
+
+/// Encrypt pre-padded Content bytes for a single recipient device. Used for
+/// both the main DataMessage send path and the sync transcript path; the
+/// content variant is encoded in the plaintext bytes themselves.
+pub(crate) fn encrypt_padded_for_recipient<S, I>(
+    padded_content: &[u8],
     timestamp_ms: u64,
     recipient_addr: &ProtocolAddress,
     local_addr: &ProtocolAddress,
@@ -154,35 +257,6 @@ where
     S: SessionStore,
     I: IdentityKeyStore,
 {
-    // (1) Build Content { DataMessage }
-    let dm = DataMessageProto {
-        body: Some(plaintext_body.to_string()),
-        timestamp: Some(timestamp_ms),
-    };
-    let content = ContentProto { data_message: Some(dm) };
-    let mut content_bytes = content.encode_to_vec();
-
-    // [Phase A v5 audit] uncommitted diagnostic — dump pre-pad bytes.
-    if std::env::var("XSCDEBUG_DUMP").is_ok() {
-        let _ = dump_hex(
-            "Content protobuf (pre-encrypt, pre-pad)",
-            timestamp_ms,
-            &content_bytes,
-        );
-    }
-
-    // (2) Pad
-    signal_pad(&mut content_bytes);
-
-    if std::env::var("XSCDEBUG_DUMP").is_ok() {
-        let _ = dump_hex(
-            "Padded plaintext (post-pad, pre-encrypt)",
-            timestamp_ms,
-            &content_bytes,
-        );
-    }
-
-    // (3) Look up dest_registration_id from the session record.
     let session_record = block_on(session_store.load_session(recipient_addr))
         .map_err(|e| OutgoingError::SessionLoad(format!("{e:?}")))?
         .ok_or(OutgoingError::NoSession)?;
@@ -190,10 +264,9 @@ where
         .remote_registration_id()
         .map_err(|e| OutgoingError::RegistrationId(format!("{e:?}")))?;
 
-    // (4) Encrypt.
     let mut rng = rand::rngs::OsRng.unwrap_err();
     let ciphertext_message = block_on(message_encrypt(
-        &content_bytes,
+        padded_content,
         recipient_addr,
         local_addr,
         session_store,
@@ -203,7 +276,6 @@ where
     ))
     .map_err(|e| OutgoingError::Encrypt(format!("{e:?}")))?;
 
-    // (5) Map variant → envelope type code.
     let (ciphertext_bytes, ciphertext_type) = match ciphertext_message {
         CiphertextMessage::SignalMessage(msg) => {
             (msg.serialized().to_vec(), ENVELOPE_CIPHERTEXT)
@@ -238,6 +310,31 @@ where
         destination_registration_id: dest_reg_id,
         timestamp_ms,
     })
+}
+
+// ---- Generic encrypt over abstract stores (testable without pddb) ----------
+
+pub(crate) fn build_encrypted_message_with_stores<S, I>(
+    plaintext_body: &str,
+    timestamp_ms: u64,
+    recipient_addr: &ProtocolAddress,
+    local_addr: &ProtocolAddress,
+    session_store: &mut S,
+    identity_store: &mut I,
+) -> Result<EncryptedMessage, OutgoingError>
+where
+    S: SessionStore,
+    I: IdentityKeyStore,
+{
+    let padded = build_padded_data_message_content(plaintext_body, timestamp_ms);
+    encrypt_padded_for_recipient(
+        &padded,
+        timestamp_ms,
+        recipient_addr,
+        local_addr,
+        session_store,
+        identity_store,
+    )
 }
 
 // ---- Production wrapper: opens pddb stores, reads local account ------------
