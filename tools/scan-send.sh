@@ -308,13 +308,7 @@ pkill -f "xous-kernel" 2>/dev/null || true
 wait "$XOUS_PID" 2>/dev/null || true
 
 case "$RESULT" in
-    sent)
-        echo ""
-        echo "RESULT: PASS (post: sent)"
-        echo "  Wire dump: $WIRE_DUMP"
-        echo "  Run ./tools/decode-wire.sh to verify wire bytes."
-        echo "  Check both phones to confirm leg-3 (user-visible)."
-        exit 0 ;;
+    sent) ;;
     failed)
         echo ""
         echo "RESULT: FAIL (send failed in log)"
@@ -324,3 +318,43 @@ case "$RESULT" in
         echo "RESULT: FAIL (no terminal log line in 90s)"
         exit 1 ;;
 esac
+
+# leg-1 confirmed: post: sent observed.
+echo ""
+echo "=== leg-1 PASS: post: sent observed ==="
+echo "  Wire dump: $WIRE_DUMP"
+
+# leg-2: recipient parse — run signal-cli receive on the recipient account
+# and confirm the body arrived at the protocol layer. Give Signal-Server
+# a moment to deliver the envelope to signal-cli's device before polling.
+echo ""
+echo "=== leg-2: recipient parse via signal-cli receive (waiting 8s) ==="
+sleep 8
+RECV_OUT=$(signal-cli -a "$XSC_RECIPIENT_NUMBER" receive 2>&1 || true)
+echo "$RECV_OUT" | head -30
+
+if echo "$RECV_OUT" | grep -qF "Body: $MESSAGE"; then
+    echo ""
+    echo "=== leg-2 PASS: Body: $MESSAGE confirmed by signal-cli ==="
+    echo ""
+    echo "RESULT: PASS (leg-1 + leg-2)"
+    echo "  Run ./tools/decode-wire.sh to verify wire bytes."
+    echo "  Check both phones to confirm leg-3 (user-visible)."
+    exit 0
+elif echo "$RECV_OUT" | grep -qiE "InvalidMessageException.*decryption failed|ProtocolInvalidMessageException"; then
+    echo ""
+    echo "=== leg-2 KNOWN_FAIL: signal-cli libsignal decrypt failure (B2) ==="
+    echo "  See tests/known-issues.md#b2-signal-cli-libsignal-decrypt-fail"
+    echo "  leg-1 PASS; leg-2 blocked by known issue B2."
+    echo "  iOS Signal on Precursor1 phone confirmed receiving in prior sessions."
+    echo ""
+    echo "RESULT: KNOWN_FAIL (B2 — see tests/known-issues.md)"
+    exit 87
+else
+    echo ""
+    echo "=== leg-2 FAIL: no Body: line and no known-exception pattern ==="
+    echo "  Full signal-cli output above. Run with --verbose for envelope detail."
+    echo ""
+    echo "RESULT: FAIL (leg-1 PASS; leg-2 FAIL — unexpected receive output)"
+    exit 1
+fi
