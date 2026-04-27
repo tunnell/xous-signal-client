@@ -88,18 +88,20 @@ elif ! command -v signal-cli &>/dev/null; then
     RESULTS[send]="SKIPPED"
     DETAIL[send]="signal-cli not installed"
 else
-    if "$SCRIPT_DIR/scan-send.sh"; then
+    SEND_EXIT=0
+    "$SCRIPT_DIR/scan-send.sh" || SEND_EXIT=$?
+    if (( SEND_EXIT == 0 )); then
         RESULTS[send]="PASS"
-        DETAIL[send]="post: sent observed; verify via decode-wire.sh + phones"
+        DETAIL[send]="leg-1 + leg-2 PASS; verify via decode-wire.sh + phones"
+    elif (( SEND_EXIT == 87 )); then
+        RESULTS[send]="KNOWN_FAIL"
+        DETAIL[send]="B2: signal-cli libsignal decrypt fail (see tests/known-issues.md)"
+    elif (( SEND_EXIT == 2 )); then
+        RESULTS[send]="SKIPPED"
+        DETAIL[send]="setup failure in scan-send.sh"
     else
-        RC=$?
-        if (( RC == 2 )); then
-            RESULTS[send]="SKIPPED"
-            DETAIL[send]="setup failure in scan-send.sh"
-        else
-            RESULTS[send]="FAIL"
-            DETAIL[send]="scan-send.sh exit $RC"
-        fi
+        RESULTS[send]="FAIL"
+        DETAIL[send]="scan-send.sh exit $SEND_EXIT"
     fi
 fi
 
@@ -186,7 +188,7 @@ echo "================================================"
 echo "Summary"
 echo "================================================"
 for fam in rust send recv footprint; do
-    printf "  %-12s %-8s %s\n" \
+    printf "  %-12s %-12s %s\n" \
         "${fam}:" "${RESULTS[$fam]:-?}" "${DETAIL[$fam]:-}"
 done
 
