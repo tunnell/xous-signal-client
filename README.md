@@ -50,3 +50,7 @@ The libsignal protocol layer is from
 
 Apache-2.0 OR AGPL-3.0 (you choose). The libsignal dependency is AGPL-3.0;
 if your usage links libsignal, choose AGPL.
+
+## Acknowledgement
+
+This project was developed with help from AI coding assistants.
