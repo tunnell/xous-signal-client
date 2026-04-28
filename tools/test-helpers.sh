@@ -94,6 +94,81 @@ xsc_fmt_bytes() {
     }'
 }
 
+# Clear signal-cli's stored sessions for a target UUID, looked up by
+# phone number on the named sender account. Forces signal-cli's next
+# outbound to that target to issue a PreKey-bundle (envelope type 3)
+# instead of reusing a stored session and sending a SignalMessage
+# (envelope type 1).
+#
+# This is the B2-sibling priming-flake mitigation. When the emulator's
+# PDDB is restored to a snapshot but signal-cli's session table for
+# the emulator's UUID has advanced past the snapshot, signal-cli sends
+# a SignalMessage that the rolled-back emulator cannot decrypt.
+# Clearing here forces a fresh PreKey-bundle session establishment,
+# which the rolled-back emulator can pick up cleanly.
+#
+# Args: signal_cli_sender_account_e164, target_number_e164
+# Returns:
+#   0 = sessions cleared (or nothing to clear; both are success)
+#   2 = setup error (accounts.json missing, python3 missing, etc.)
+xsc_clear_signal_cli_sessions() {
+    local sender="$1"
+    local target="$2"
+    local signal_cli_root="${SIGNAL_CLI_ROOT:-$HOME/.local/share/signal-cli}"
+    local accounts_json="$signal_cli_root/data/accounts.json"
+
+    if [[ ! -f "$accounts_json" ]]; then
+        echo "WARN: signal-cli accounts.json not found: $accounts_json" >&2
+        echo "      Skipping session-clear; priming may flake (issue #9)." >&2
+        return 2
+    fi
+    if ! command -v python3 &>/dev/null; then
+        echo "WARN: python3 not found; cannot clear signal-cli sessions" >&2
+        echo "      Skipping session-clear; priming may flake (issue #9)." >&2
+        return 2
+    fi
+
+    python3 - "$accounts_json" "$sender" "$target" <<'PYEOF'
+import sqlite3, json, os, sys
+
+accounts_json, sender, target = sys.argv[1], sys.argv[2], sys.argv[3]
+
+# Locate sender's account.db.
+with open(accounts_json) as f:
+    data = json.load(f)
+sender_path = None
+for acc in data.get("accounts", []):
+    if acc.get("number") == sender:
+        sender_path = acc.get("path")
+        break
+if not sender_path:
+    print(f"  signal-cli has no account for {sender}; nothing to clear")
+    sys.exit(0)
+
+if not os.path.isabs(sender_path):
+    sender_path = os.path.join(os.path.dirname(accounts_json), sender_path)
+db_dir = sender_path if sender_path.endswith(".d") else sender_path + ".d"
+db_path = os.path.join(db_dir, "account.db")
+if not os.path.exists(db_path):
+    print(f"  signal-cli db not at {db_path}; nothing to clear")
+    sys.exit(0)
+
+# Look up target UUID and delete any session rows.
+con = sqlite3.connect(db_path)
+row = con.execute("SELECT aci FROM recipient WHERE number = ?", (target,)).fetchone()
+if not row or not row[0]:
+    print(f"  signal-cli has no recipient row for {target}; nothing to clear")
+    con.close()
+    sys.exit(0)
+uuid = row[0]
+cur = con.execute("DELETE FROM session WHERE address = ?", (uuid,))
+con.commit()
+print(f"  cleared {cur.rowcount} session row(s) for {target} (uuid={uuid})")
+con.close()
+PYEOF
+    return 0
+}
+
 # Verify signal-cli is linked to a given account with at least one
 # expected linked secondary. Per the canonical topology in
 # ~/workdir/ACCOUNT-MAPPING.md, the test harness REQUIRES `signal-cli-test`

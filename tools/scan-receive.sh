@@ -134,6 +134,16 @@ cp "$PDDB_IMAGE" "$HOSTED_BIN"
 # new session on the emulator's side at boot. The actual marker that
 # follows then rides the fresh session. Same pattern as v7's send
 # scan harness.
+#
+# Pre-step: clear signal-cli's stored sessions for the emulator UUID
+# (issue #9 / B2-sibling priming flake). Without this, signal-cli
+# reuses its stored session and emits a SignalMessage instead of a
+# PreKey-bundle — the rolled-back emulator then cannot decrypt the
+# priming envelope and the receive marker that follows is lost.
+echo "=== Clearing signal-cli sessions for emulator UUID ==="
+xsc_clear_signal_cli_sessions "$SIGNAL_CLI_ACCOUNT" "$EMULATOR_ACCOUNT" || true
+echo ""
+
 echo "=== Priming session via signal-cli (queued for emulator boot) ==="
 PRIME_BODY="phase-r-plus recv prime $TS"
 if signal-cli -a "$SIGNAL_CLI_ACCOUNT" send -m "$PRIME_BODY" \

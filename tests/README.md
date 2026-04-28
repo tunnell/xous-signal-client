@@ -270,6 +270,19 @@ they exit 2 (setup error) without doing any work. This is the
 hard guard against the topology confusion that affected several
 earlier sessions.
 
+**Priming step (both scripts):** before either scan boots the
+emulator, the script clears signal-cli's stored sessions for the
+emulator's UUID via `xsc_clear_signal_cli_sessions` in
+`tools/test-helpers.sh`, then sends a priming envelope from
+signal-cli to the emulator account. Clearing first forces
+signal-cli to issue a PreKey-bundle envelope (type 3) instead of
+reusing a stale session and sending a SignalMessage (type 1) —
+which the rolled-back PDDB cannot decrypt. This is the documented
+B2-sibling priming-flake mitigation; without it, scan-send and
+scan-receive flake intermittently. See bug arc `b005` and tracker
+issue #9. `tools/demo-prep.sh` uses the same helper for the same
+reason.
+
 **Topology (canonical, see `~/workdir/ACCOUNT-MAPPING.md`):**
 
 - Two phone numbers, each on a separate physical phone the user
