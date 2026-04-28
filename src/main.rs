@@ -3,11 +3,13 @@
 
 mod api;
 use api::*;
-use chat::{Chat, Event};
+use chat::{AuthorFlag, Chat, Event};
+use enumset::EnumSet;
 use gam::{MenuItem, MenuPayload};
 use locales::t;
 use num_traits::*;
 use xous_signal_client::SigChat;
+use xous_signal_client::manager::outgoing;
 use xous_ipc::Buffer;
 
 fn main() -> ! {
@@ -74,6 +76,16 @@ fn wrapped_main() -> ! {
     let mut first_focus = true;
     let mut user_post: Option<String> = None;
 
+    // Optional pre-seed of the V1 default outgoing recipient from the
+    // environment. Lets a hosted-mode session send the first message
+    // without first having received one. No-op if XSC_DEMO_PEER_UUID is
+    // unset, invalid, or a recipient is already persisted.
+    match outgoing::seed_demo_recipient_from_env() {
+        Ok(true) => log::info!("seeded demo recipient from XSC_DEMO_PEER_UUID"),
+        Ok(false) => {}
+        Err(e) => log::warn!("seed_demo_recipient_from_env failed: {e}"),
+    }
+
     // Auto-connect if the account is already registered (e.g. headless scan).
     // This fires the same logic as the first Event::Focus would have.
     if sigchat.is_ready() {
@@ -82,6 +94,9 @@ fn wrapped_main() -> ! {
             Ok(true) => {
                 log::info!("connected to Signal Account");
                 sigchat.dialogue_set(Some("default"));
+                if let Err(e) = chat.set_author_flags("me", EnumSet::from(AuthorFlag::Right)) {
+                    log::warn!("set_author_flags(\"me\") failed: {e:?}");
+                }
                 match sigchat.start_receive(chat.cid()) {
                     Ok(true) => log::info!("receive worker started"),
                     Ok(false) => log::warn!("start_receive returned false"),
@@ -109,6 +124,9 @@ fn wrapped_main() -> ! {
                                         first_focus = false;
                                         log::info!("connected to Signal Account");
                                         sigchat.dialogue_set(Some("default"));
+                                        if let Err(e) = chat.set_author_flags("me", EnumSet::from(AuthorFlag::Right)) {
+                                            log::warn!("set_author_flags(\"me\") failed: {e:?}");
+                                        }
                                         match sigchat.start_receive(chat.cid()) {
                                             Ok(true) => log::info!("receive worker started"),
                                             Ok(false) => log::warn!("start_receive returned false"),

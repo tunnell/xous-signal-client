@@ -7,6 +7,25 @@ Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `XSC_DEMO_PEER_UUID` (and optional `XSC_DEMO_PEER_DEVICE_ID`) env-var
+  seam: pre-seeds the V1 default outgoing recipient at startup so a
+  hosted-mode session can send the first message without first having
+  received one. Validates UUID format and device-id range; falls back
+  to current behavior on unset/invalid input or if a recipient is
+  already persisted in PDDB. Eight new unit tests in
+  `manager::outgoing::tests::parse_demo_peer_*`.
+- Right-aligned local-author bubbles. `main.rs` calls
+  `chat.set_author_flags("me", AuthorFlag::Right)` after `dialogue_set`
+  so outgoing local-echo bubbles render on the conventional sender
+  side. Depends on the `Chat::set_author_flags` API added to chat-lib
+  on the project's pinned `feat/05-curve25519-dalek-4.1.3` branch
+  (tracked in `xous-signal-client-notes/techContext.md` patch table).
+- `tools/demo-prep.sh`: recording-day setup script. Restores the PDDB
+  snapshot, looks up the emulator's UUID via signal-cli's `recipient`
+  table by phone number, deletes any stale `session` rows for that
+  UUID (B2-sibling priming-flake mitigation per
+  `bug-arcs/b005-signal-cli-libsignal-decrypt.md`), and runs
+  `scan-receive.sh` once to warm up a clean session.
 - `AGENTS.md`, `ARCHITECTURE.md`, `CHANGELOG.md`: project documentation
   derived from a consolidation pass.
 - `docs/decisions/`: 9 MADR-format ADRs covering hand-rolled libsignal-

@@ -110,7 +110,7 @@ pub(crate) struct EncryptedMessage {
 }
 
 #[derive(Debug)]
-pub(crate) enum OutgoingError {
+pub enum OutgoingError {
     Pddb(String),
     NoRecipient,
     NoLocalAccount(String),
@@ -389,7 +389,7 @@ fn local_protocol_address() -> Result<ProtocolAddress, OutgoingError> {
 /// Persist the most recent sender's UUID + device_id as the default outgoing
 /// recipient. Called by the receive path after a successful DataMessage
 /// delivery so that the user's reply has somewhere to go.
-pub(crate) fn set_current_recipient(remote_addr: &ProtocolAddress) -> Result<(), OutgoingError> {
+pub fn set_current_recipient(remote_addr: &ProtocolAddress) -> Result<(), OutgoingError> {
     let pddb = pddb::Pddb::new();
     pddb.try_mount();
     let payload = format!(
@@ -408,12 +408,87 @@ pub(crate) fn set_current_recipient(remote_addr: &ProtocolAddress) -> Result<(),
 
 /// Read the most recent sender as a ProtocolAddress, or `NoRecipient` if no
 /// one has messaged us yet.
-pub(crate) fn current_recipient() -> Result<ProtocolAddress, OutgoingError> {
+pub fn current_recipient() -> Result<ProtocolAddress, OutgoingError> {
     let pddb = pddb::Pddb::new();
     pddb.try_mount();
     let raw = pddb_get_string(&pddb, DIALOGUE_DICT, DEFAULT_PEER_KEY)
         .ok_or(OutgoingError::NoRecipient)?;
     parse_peer_json(&raw)
+}
+
+/// Pre-seed the default outgoing recipient from environment variables.
+///
+/// Reads `XSC_DEMO_PEER_UUID` (required, hyphenated UUID string) and
+/// `XSC_DEMO_PEER_DEVICE_ID` (optional, default 1). If both parse and a
+/// recipient is not already persisted in PDDB, calls
+/// [`set_current_recipient`] with the parsed address so a subsequent
+/// `SigChat::post()` has somewhere to send before any inbound DataMessage
+/// has populated the field via the V1 most-recent-sender mechanism.
+///
+/// Behavior:
+/// - `XSC_DEMO_PEER_UUID` unset → no-op, falls back to the V1 mechanism.
+/// - Invalid UUID format → log warning, no-op.
+/// - `XSC_DEMO_PEER_DEVICE_ID` unset → defaults to `1` (typical primary).
+/// - `XSC_DEMO_PEER_DEVICE_ID` invalid (non-numeric, 0, or >127) →
+///   log warning, no-op.
+/// - A recipient already persisted in PDDB → the seed is skipped to
+///   preserve any V1-captured peer; warn so the operator notices.
+///
+/// Returns `Ok(true)` if the seed was applied, `Ok(false)` if it was a
+/// no-op for any non-error reason (env unset, recipient already present).
+pub fn seed_demo_recipient_from_env() -> Result<bool, OutgoingError> {
+    let uuid_env = match std::env::var("XSC_DEMO_PEER_UUID") {
+        Ok(s) if !s.is_empty() => s,
+        _ => return Ok(false),
+    };
+    let dev_env = std::env::var("XSC_DEMO_PEER_DEVICE_ID").ok();
+
+    let addr = match parse_demo_peer(&uuid_env, dev_env.as_deref()) {
+        Ok(addr) => addr,
+        Err(reason) => {
+            log::warn!("XSC_DEMO_PEER_UUID/_DEVICE_ID rejected: {reason} — skipping seed");
+            return Ok(false);
+        }
+    };
+
+    if current_recipient().is_ok() {
+        log::warn!("XSC_DEMO_PEER_UUID set but a recipient is already persisted; skipping seed to preserve V1 state");
+        return Ok(false);
+    }
+
+    set_current_recipient(&addr)?;
+    log::info!(
+        "seeded demo recipient: uuid={} device_id={}",
+        addr.name(),
+        u32::from(addr.device_id()),
+    );
+    Ok(true)
+}
+
+/// Pure-function helper: validate a UUID + device_id and produce a
+/// `ProtocolAddress`. `device_id_str` of `None` defaults to 1. Returns
+/// a human-readable reason on rejection so callers can log it.
+///
+/// Hyphenated UUID format is required (36 chars, hyphens at positions
+/// 8/13/18/23, ASCII hex elsewhere). DeviceId must be 1..=127.
+fn parse_demo_peer(uuid: &str, device_id_str: Option<&str>) -> Result<ProtocolAddress, String> {
+    if uuid.len() != 36
+        || !uuid.chars().enumerate().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => c == '-',
+            _ => c.is_ascii_hexdigit(),
+        })
+    {
+        return Err(format!("not a valid hyphenated UUID: {uuid:?}"));
+    }
+    let device_id: u32 = match device_id_str {
+        Some(s) => s.parse().map_err(|e| format!("device_id parse: {e}"))?,
+        None => 1,
+    };
+    if device_id == 0 || device_id > 127 {
+        return Err(format!("device_id out of range (1..=127): {device_id}"));
+    }
+    let dev = DeviceId::new(device_id as u8).map_err(|e| format!("DeviceId: {e:?}"))?;
+    Ok(ProtocolAddress::new(uuid.to_string(), dev))
 }
 
 fn parse_peer_json(s: &str) -> Result<ProtocolAddress, OutgoingError> {
@@ -779,5 +854,63 @@ mod tests {
             &mut alice_store.session_store, &mut alice_store.identity_store,
         );
         assert!(matches!(result, Err(OutgoingError::NoSession)));
+    }
+
+    // ---- parse_demo_peer ----------------------------------------------------
+
+    const VALID_UUID: &str = "00000000-0000-4000-8000-000000000001";
+
+    #[test]
+    fn parse_demo_peer_default_device_is_1() {
+        let addr = parse_demo_peer(VALID_UUID, None).unwrap();
+        assert_eq!(addr.name(), VALID_UUID);
+        assert_eq!(u32::from(addr.device_id()), 1);
+    }
+
+    #[test]
+    fn parse_demo_peer_explicit_device() {
+        let addr = parse_demo_peer(VALID_UUID, Some("2")).unwrap();
+        assert_eq!(u32::from(addr.device_id()), 2);
+    }
+
+    #[test]
+    fn parse_demo_peer_rejects_short_uuid() {
+        let err = parse_demo_peer("00000000", None).unwrap_err();
+        assert!(err.contains("UUID"), "expected UUID error, got: {err}");
+    }
+
+    #[test]
+    fn parse_demo_peer_rejects_misplaced_hyphens() {
+        // Right length (36) but hyphens in wrong positions.
+        let bad = "000000000-0000-4000-8000-000000000001";
+        assert_eq!(bad.len(), 37, "test fixture wrong length");
+        let bad = &bad[..36];
+        let err = parse_demo_peer(bad, None).unwrap_err();
+        assert!(err.contains("UUID"));
+    }
+
+    #[test]
+    fn parse_demo_peer_rejects_non_hex() {
+        let bad = "zz000000-0000-4000-8000-000000000001";
+        let err = parse_demo_peer(bad, None).unwrap_err();
+        assert!(err.contains("UUID"));
+    }
+
+    #[test]
+    fn parse_demo_peer_rejects_device_id_zero() {
+        let err = parse_demo_peer(VALID_UUID, Some("0")).unwrap_err();
+        assert!(err.contains("out of range"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_demo_peer_rejects_device_id_too_large() {
+        let err = parse_demo_peer(VALID_UUID, Some("128")).unwrap_err();
+        assert!(err.contains("out of range"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_demo_peer_rejects_non_numeric_device_id() {
+        let err = parse_demo_peer(VALID_UUID, Some("abc")).unwrap_err();
+        assert!(err.contains("parse"), "got: {err}");
     }
 }
