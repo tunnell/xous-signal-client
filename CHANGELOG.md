@@ -97,6 +97,11 @@ Changelog](https://keepachangelog.com/en/1.1.0/).
   out, sync transcripts, testing methodology, KNOWN_FAIL convention,
   diagnostic instrumentation, PDDB stores schema, and worker-thread
   WebSocket pattern.
+- `docs/decisions/0010-outbound-datamessage-omits-profilekey.md`:
+  ADR documenting the decision to leave `profileKey` absent from
+  outbound `DataMessage`. Not a delivery fix (V6/V7 demonstrated
+  delivery works without it); first-contact display-name UX is a
+  separate future enhancement. Closes #19.
 - Maintenance contract section in `AGENTS.md` codifying the working
   agreement that documentation is maintained as part of code changes.
 - `.gitignore` patterns for PDDB snapshot files (sensitive credential
