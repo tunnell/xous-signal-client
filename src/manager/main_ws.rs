@@ -10,6 +10,7 @@
 #![deny(clippy::panic)]
 
 use std::convert::TryFrom as _;
+use std::rc::Rc;
 use futures::executor::block_on;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use libsignal_protocol::{
@@ -426,17 +427,18 @@ fn dispatch_envelope(body: Vec<u8>, local_addr: &ProtocolAddress, chat_cid: CID)
         }
     };
 
-    let pddb_id = pddb::Pddb::new(); pddb_id.try_mount();
-    let pddb_pk = pddb::Pddb::new(); pddb_pk.try_mount();
-    let pddb_spk = pddb::Pddb::new(); pddb_spk.try_mount();
-    let pddb_kpk = pddb::Pddb::new(); pddb_kpk.try_mount();
-    let pddb_ses = pddb::Pddb::new(); pddb_ses.try_mount();
+    // Single shared PDDB handle across all five stores (issue #26). Each
+    // `pddb::Pddb::new()` makes a fresh `xns.request_connection_blocking`
+    // RPC; cloning the `Rc` is a refcount bump. Per-envelope wins: 5 → 1
+    // PDDB connection-request RPCs, 5 → 1 try_mount calls.
+    let pddb = Rc::new(pddb::Pddb::new());
+    pddb.try_mount();
 
-    let mut identity_store = PddbIdentityStore::new(pddb_id, ACCOUNT_DICT, IDENTITY_DICT);
-    let mut pre_key_store = PddbPreKeyStore::new(pddb_pk, PREKEY_DICT);
-    let signed_pre_key_store = PddbSignedPreKeyStore::new(pddb_spk, SIGNED_PREKEY_DICT);
-    let mut kyber_pre_key_store = PddbKyberPreKeyStore::new(pddb_kpk, KYBER_PREKEY_DICT);
-    let mut session_store = PddbSessionStore::new(pddb_ses, SESSION_DICT);
+    let mut identity_store = PddbIdentityStore::new_shared(pddb.clone(), ACCOUNT_DICT, IDENTITY_DICT);
+    let mut pre_key_store = PddbPreKeyStore::new_shared(pddb.clone(), PREKEY_DICT);
+    let signed_pre_key_store = PddbSignedPreKeyStore::new_shared(pddb.clone(), SIGNED_PREKEY_DICT);
+    let mut kyber_pre_key_store = PddbKyberPreKeyStore::new_shared(pddb.clone(), KYBER_PREKEY_DICT);
+    let mut session_store = PddbSessionStore::new_shared(pddb, SESSION_DICT);
     let mut rng = rand::rngs::OsRng.unwrap_err();
 
     // Sealed sender: sender identity is encrypted inside the ciphertext.

@@ -7,6 +7,15 @@ Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `main_ws::dispatch_envelope` now uses a single shared `Rc<pddb::Pddb>`
+  across all five protocol stores instead of allocating a fresh
+  `pddb::Pddb::new()` per store. Each `Pddb::new()` invokes
+  `xns.request_connection_blocking` (an RPC); the consolidation drops
+  per-envelope PDDB connection-request RPCs from 5 to 1, and `try_mount`
+  calls from 5 to 1. New `*Store::new_shared(pddb: Rc<pddb::Pddb>, ...)`
+  constructors expose the consolidation pattern; the existing
+  `*Store::new(pddb: Pddb, ...)` constructors stay backward-compatible
+  (they wrap in `Rc` internally). Closes #26.
 - `tools/measure-renode.sh`: previously exited 2 (skip) when Renode
   refused to compile `LiteX_Timer_32.cs` due to a `long`/`ulong`
   mismatch against Renode 1.16.1. The cast itself is now fixed in
