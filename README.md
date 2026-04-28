@@ -35,6 +35,13 @@ Then back in `xous-core`:
 
 (or `app-image` for hardware/Renode).
 
+## Documentation
+
+- [`AGENTS.md`](AGENTS.md) — cold-start context for agents and contributors.
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — bird's-eye view of the major modules.
+- [`CHANGELOG.md`](CHANGELOG.md) — what's shipped (Keep a Changelog format).
+- [`docs/decisions/`](docs/decisions/) — architectural decision records (MADR).
+
 ## Testing
 
 The project's testing methodology and how to run all three test
