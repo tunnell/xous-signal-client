@@ -7,6 +7,15 @@ Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- B2 (issue #8) closed: signal-cli libsignal `InvalidMessageException`
+  on the emulator's post-409-retry CIPHERTEXT is no longer reproducible
+  after the receive-direction priming-flake fix in PR #30 (issue #9).
+  Three consecutive `scan-send.sh` runs all PASSed leg-1 + leg-2.
+  Removed the `KNOWN_FAIL` exit-87 mapping from `tools/scan-send.sh`
+  and `tools/run-all-tests.sh`; moved B2 to `tests/known-issues.md`'s
+  "Resolved" section. `scan-send.sh` retains a defensive recognizer
+  that emits a "B2 regression?" diagnostic if the pattern ever
+  re-occurs (exits 1, not 87).
 - `main_ws::dispatch_envelope` now uses a single shared `Rc<pddb::Pddb>`
   across all five protocol stores instead of allocating a fresh
   `pddb::Pddb::new()` per store. Each `Pddb::new()` invokes
@@ -99,17 +108,8 @@ Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Open known issues
 
-- **B2** — signal-cli libsignal decrypt failure on post-409-retry
-  CIPHERTEXT. KNOWN_FAIL handling stays in `tools/scan-send.sh` and
-  `tools/run-all-tests.sh`. As of the 2026-04-28 dedicated investigation,
-  the documented send-direction failure is **not currently
-  reproducible** (5/5 consecutive scan-send PASSes exercising the
-  409 retry path). The PR #4 chain-counter-advance hypothesis is
-  contradicted by the repeated successful decrypts. KNOWN_FAIL stays
-  in place because the same libsignal failure-mode string surfaced in
-  the *receive* direction during the investigation, triggered by
-  PDDB-snapshot rollback while signal-cli's session state moves
-  forward across runs. See bug arc and `tests/known-issues.md`.
+*(none currently — B2 closed 2026-04-28; see `tests/known-issues.md`
+"Resolved" for historical entries)*
 
 ## [0.0.4] - 2026-04-27 — commit `5117925` (PR #4)
 
