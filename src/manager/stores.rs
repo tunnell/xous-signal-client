@@ -6,6 +6,7 @@
 
 use async_trait::async_trait;
 use std::io::{Read, Write};
+use std::rc::Rc;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use libsignal_protocol::{
     Direction, IdentityChange, IdentityKey, IdentityKeyPair, IdentityKeyStore,
@@ -24,13 +25,25 @@ type SignalResult<T> = std::result::Result<T, SignalProtocolError>;
 // ---------------------------------------------------------------------------
 
 pub struct PddbIdentityStore {
-    pddb: pddb::Pddb,
+    pddb: Rc<pddb::Pddb>,
     account_dict: &'static str,
     identity_dict: &'static str,
 }
 
 impl PddbIdentityStore {
+    /// Construct from an owned `Pddb` handle. Internally wraps in `Rc` so
+    /// the store can coexist with other stores sharing the same handle —
+    /// see [`new_shared`] for the consolidated-dispatch entry point
+    /// (issue #26).
     pub fn new(pddb: pddb::Pddb, account_dict: &'static str, identity_dict: &'static str) -> Self {
+        Self::new_shared(Rc::new(pddb), account_dict, identity_dict)
+    }
+
+    /// Construct from a shared (`Rc`-wrapped) `Pddb` handle. Cheaper than
+    /// [`new`] when multiple stores share a single underlying connection.
+    /// Used by `main_ws::dispatch_envelope` to drop from 5 `Pddb::new()`
+    /// RPCs per inbound envelope to 1 (issue #26).
+    pub fn new_shared(pddb: Rc<pddb::Pddb>, account_dict: &'static str, identity_dict: &'static str) -> Self {
         Self { pddb, account_dict, identity_dict }
     }
 }
@@ -142,12 +155,17 @@ impl IdentityKeyStore for PddbIdentityStore {
 // ---------------------------------------------------------------------------
 
 pub struct PddbPreKeyStore {
-    pddb: pddb::Pddb,
+    pddb: Rc<pddb::Pddb>,
     dict: &'static str,
 }
 
 impl PddbPreKeyStore {
     pub fn new(pddb: pddb::Pddb, dict: &'static str) -> Self {
+        Self::new_shared(Rc::new(pddb), dict)
+    }
+
+    /// See [`PddbIdentityStore::new_shared`] (issue #26).
+    pub fn new_shared(pddb: Rc<pddb::Pddb>, dict: &'static str) -> Self {
         Self { pddb, dict }
     }
 }
@@ -208,12 +226,17 @@ impl PreKeyStore for PddbPreKeyStore {
 // ---------------------------------------------------------------------------
 
 pub struct PddbSignedPreKeyStore {
-    pddb: pddb::Pddb,
+    pddb: Rc<pddb::Pddb>,
     dict: &'static str,
 }
 
 impl PddbSignedPreKeyStore {
     pub fn new(pddb: pddb::Pddb, dict: &'static str) -> Self {
+        Self::new_shared(Rc::new(pddb), dict)
+    }
+
+    /// See [`PddbIdentityStore::new_shared`] (issue #26).
+    pub fn new_shared(pddb: Rc<pddb::Pddb>, dict: &'static str) -> Self {
         Self { pddb, dict }
     }
 }
@@ -252,12 +275,17 @@ impl SignedPreKeyStore for PddbSignedPreKeyStore {
 // ---------------------------------------------------------------------------
 
 pub struct PddbKyberPreKeyStore {
-    pddb: pddb::Pddb,
+    pddb: Rc<pddb::Pddb>,
     dict: &'static str,
 }
 
 impl PddbKyberPreKeyStore {
     pub fn new(pddb: pddb::Pddb, dict: &'static str) -> Self {
+        Self::new_shared(Rc::new(pddb), dict)
+    }
+
+    /// See [`PddbIdentityStore::new_shared`] (issue #26).
+    pub fn new_shared(pddb: Rc<pddb::Pddb>, dict: &'static str) -> Self {
         Self { pddb, dict }
     }
 }
@@ -336,12 +364,17 @@ impl KyberPreKeyStore for PddbKyberPreKeyStore {
 // ---------------------------------------------------------------------------
 
 pub struct PddbSessionStore {
-    pddb: pddb::Pddb,
+    pddb: Rc<pddb::Pddb>,
     dict: &'static str,
 }
 
 impl PddbSessionStore {
     pub fn new(pddb: pddb::Pddb, dict: &'static str) -> Self {
+        Self::new_shared(Rc::new(pddb), dict)
+    }
+
+    /// See [`PddbIdentityStore::new_shared`] (issue #26).
+    pub fn new_shared(pddb: Rc<pddb::Pddb>, dict: &'static str) -> Self {
         Self { pddb, dict }
     }
 

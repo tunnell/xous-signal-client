@@ -37,21 +37,23 @@ Skip flags are available for selective runs:
 
 ### KNOWN_FAIL results
 
-Some test families may report **KNOWN_FAIL** instead of PASS or FAIL. A
-KNOWN_FAIL is a failure whose root cause is understood and documented in
-[`known-issues.md`](known-issues.md). The orchestrator exits 0 when all
-non-KNOWN_FAIL results pass — KNOWN_FAIL is surfaced honestly in the
-summary without blocking the suite.
+A `KNOWN_FAIL` is a failure whose root cause is understood and
+documented in [`known-issues.md`](known-issues.md). The orchestrator
+exits 0 when all non-`KNOWN_FAIL` results pass — `KNOWN_FAIL` is
+surfaced honestly in the summary without blocking the suite.
 
 The conventions:
 
-- `scan-send.sh` exits with code **87** when it detects the B2 pattern
-  (`InvalidMessageException: decryption failed` from signal-cli after a
-  409-retry send). The orchestrator maps exit 87 → `KNOWN_FAIL`.
+- A scan script exits with code **87** when it detects a documented
+  known-issue pattern. The orchestrator maps exit 87 → `KNOWN_FAIL`.
 - Any other non-zero exit from a scan script is still `FAIL` (exit 1)
   or `SKIPPED` (exit 2).
 - When a known issue is resolved, delete its entry from `known-issues.md`
   and remove the KNOWN_FAIL handling from the relevant scan script.
+
+There are no current `KNOWN_FAIL` patterns wired today (B2 was the
+last one, resolved 2026-04-28; see `known-issues.md` "Resolved"
+section). The infrastructure is preserved for future use.
 
 ### From a fresh clone
 
@@ -352,18 +354,16 @@ The script exits 0 only when both legs pass.
 | Code | Meaning |
 |------|---------|
 | 0 | leg-1 PASS + leg-2 PASS |
-| 1 | leg-1 FAIL, or leg-2 FAIL with unexpected output |
+| 1 | leg-1 FAIL, or leg-2 FAIL (any reason) |
 | 2 | Setup failure (missing env, prerequisite, topology) |
-| 87 | leg-1 PASS + leg-2 KNOWN_FAIL (see `tests/known-issues.md`) |
+| 87 | Reserved for documented `KNOWN_FAIL` patterns (currently unused — see `known-issues.md`) |
 
-**Current known state of leg-2.**
-As of 2026-04-27, signal-cli's libsignal returns
-`InvalidMessageException: invalid Whisper message: decryption failed`
-on the emulator's post-409-retry CIPHERTEXT (B2 in
-`known-issues.md`). The script exits 87 and the orchestrator reports
-`KNOWN_FAIL`. iOS Signal on the recipient's primary phone received
-the same message correctly in earlier sessions — this is a
-signal-cli-specific session-state divergence, not a wire-format bug.
+**Current expected state of leg-2.** Both legs pass cleanly. B2
+(signal-cli libsignal `InvalidMessageException` on the emulator's
+post-409-retry CIPHERTEXT) was resolved 2026-04-28 — see
+`known-issues.md` "Resolved". `scan-send.sh` retains a defensive
+recognizer for the B2 pattern; if it ever re-occurs, the script
+emits a "B2 regression?" diagnostic and exits 1 (FAIL).
 
 **Verify wire bytes (leg 1):**
 
