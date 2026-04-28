@@ -7,6 +7,15 @@ Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `AccountAttributes` JSON payload (sent on link / registration; pre-required
+  for the upcoming `PUT /v1/accounts/attributes` in #16) now omits three
+  legacy fields: `signalingKey` (obsolete since libsignal Double Ratchet
+  ~2017), `voice`, and `video` (modern Signal-Server carries voice/video
+  capability under the `capabilities` sub-object, not at the top level).
+  The remaining 10 top-level fields and the 5 capability sub-fields match
+  modern Signal-Server's `AccountAttributes` entity. Three new unit tests
+  pin the absence of the legacy fields and the exact set of top-level
+  keys. Closes #17.
 - WebSocket upgrade handshake now sends `X-Signal-Receive-Stories: false`
   (was `true`). xous-signal-client has no Story-rendering UI; asking the
   server for Story envelopes wasted bandwidth and decryption cycles on
