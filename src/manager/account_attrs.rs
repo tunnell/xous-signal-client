@@ -74,7 +74,7 @@ pub fn generate_registration_id() -> Result<u16, Error> {
     Ok(((rng.next_u32() % 16380) + 1) as u16)
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct Capabilities {
     pub storage: bool,
     #[serde(rename = "versionedExpirationTimer")]
@@ -100,7 +100,7 @@ pub struct Capabilities {
 /// Server-side parsers tolerate the legacy fields when present (Jackson
 /// `@JsonIgnoreProperties(ignoreUnknown = true)`), but sending them was
 /// dead weight on every link/attributes call.
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct AccountAttributes {
     #[serde(rename = "registrationId")]
     pub registration_id: u32,
