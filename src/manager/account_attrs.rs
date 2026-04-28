@@ -85,14 +85,25 @@ pub struct Capabilities {
     pub spqr: bool,
 }
 
+/// JSON shape of the `accountAttributes` field on the link / registration
+/// REST body, and (per issue #16) on the post-link
+/// `PUT /v1/accounts/attributes` call.
+///
+/// Field set matches modern Signal-Server's `AccountAttributes` entity.
+/// Three legacy fields removed in issue #17:
+/// - `signalingKey` (pre-libsignal Double Ratchet HMAC key; obsolete since
+///   the libsignal protocol replaced the old AxolotlRatchet ~2017).
+/// - `voice` / `video` (legacy top-level booleans; modern Signal-Server
+///   carries voice/video capability via the `capabilities` sub-object,
+///   not at the top level).
+///
+/// Server-side parsers tolerate the legacy fields when present (Jackson
+/// `@JsonIgnoreProperties(ignoreUnknown = true)`), but sending them was
+/// dead weight on every link/attributes call.
 #[derive(Serialize)]
 pub struct AccountAttributes {
-    #[serde(rename = "signalingKey")]
-    pub signaling_key: Option<String>,
     #[serde(rename = "registrationId")]
     pub registration_id: u32,
-    pub voice: bool,
-    pub video: bool,
     #[serde(rename = "fetchesMessages")]
     pub fetches_messages: bool,
     #[serde(rename = "registrationLock")]
@@ -119,10 +130,7 @@ pub fn build_account_attributes(
 ) -> Result<AccountAttributes, Error> {
     let uak = derive_unidentified_access_key(profile_key)?;
     Ok(AccountAttributes {
-        signaling_key: None,
         registration_id: registration_id as u32,
-        voice: true,
-        video: true,
         fetches_messages: true,
         registration_lock: None,
         unidentified_access_key: STANDARD.encode(uak),
@@ -199,10 +207,7 @@ mod tests {
         let json = serde_json::to_value(&attrs).expect("serialize");
         // Spot-check the renamed/camelCase fields that Signal's server parses.
         for key in [
-            "signalingKey",
             "registrationId",
-            "voice",
-            "video",
             "fetchesMessages",
             "registrationLock",
             "unidentifiedAccessKey",
@@ -219,10 +224,85 @@ mod tests {
         for key in ["storage", "versionedExpirationTimer", "attachmentBackfill", "ssre2", "spqr"] {
             assert_eq!(caps.get(key), Some(&serde_json::Value::Bool(true)), "capabilities.{} should be true", key);
         }
-        assert_eq!(json["signalingKey"], serde_json::Value::Null);
         assert_eq!(json["registrationLock"], serde_json::Value::Null);
         assert_eq!(json["recoveryPassword"], serde_json::Value::Null);
         assert_eq!(json["registrationId"], serde_json::json!(42));
         assert_eq!(json["pniRegistrationId"], serde_json::json!(43));
+    }
+
+    #[test]
+    fn attributes_omit_legacy_signaling_key() {
+        // signalingKey is the pre-libsignal Double Ratchet HMAC key; obsolete
+        // since ~2017 when libsignal replaced the old AxolotlRatchet protocol.
+        // Modern Signal-Server's AccountAttributes entity ignores it. Issue #17
+        // dropped this field entirely from our payload.
+        let attrs = build_account_attributes(
+            "ZGV2aWNlLW5hbWU=".to_string(),
+            &[0u8; 32],
+            42,
+            43,
+        )
+        .expect("build");
+        let json = serde_json::to_value(&attrs).expect("serialize");
+        assert!(
+            json.get("signalingKey").is_none(),
+            "signalingKey is legacy and must not appear in modern AccountAttributes"
+        );
+    }
+
+    #[test]
+    fn attributes_omit_legacy_voice_video_top_level() {
+        // Modern Signal-Server carries voice/video signaling capability under
+        // the `capabilities` sub-object, not as top-level booleans. Issue #17
+        // dropped both `voice` and `video` from the top level. capabilities
+        // sub-object remains and is asserted by the round-trip test above.
+        let attrs = build_account_attributes(
+            "ZGV2aWNlLW5hbWU=".to_string(),
+            &[0u8; 32],
+            42,
+            43,
+        )
+        .expect("build");
+        let json = serde_json::to_value(&attrs).expect("serialize");
+        assert!(
+            json.get("voice").is_none(),
+            "voice is a legacy top-level field; modern signal moves it under capabilities"
+        );
+        assert!(
+            json.get("video").is_none(),
+            "video is a legacy top-level field; modern signal moves it under capabilities"
+        );
+    }
+
+    #[test]
+    fn attributes_payload_contains_only_modern_fields() {
+        // Pin the exact set of top-level keys we send. A future regression
+        // that re-introduces a deprecated field (or accidentally drops a
+        // required one) will surface here.
+        let attrs = build_account_attributes(
+            "ZGV2aWNlLW5hbWU=".to_string(),
+            &[0u8; 32],
+            42,
+            43,
+        )
+        .expect("build");
+        let json = serde_json::to_value(&attrs).expect("serialize");
+        let obj = json.as_object().expect("AccountAttributes serializes to a JSON object");
+        let mut got: Vec<&str> = obj.keys().map(String::as_str).collect();
+        got.sort();
+        let mut want: Vec<&str> = vec![
+            "capabilities",
+            "discoverableByPhoneNumber",
+            "fetchesMessages",
+            "name",
+            "pniRegistrationId",
+            "recoveryPassword",
+            "registrationId",
+            "registrationLock",
+            "unidentifiedAccessKey",
+            "unrestrictedUnidentifiedAccess",
+        ];
+        want.sort();
+        assert_eq!(got, want, "AccountAttributes top-level field set drifted");
     }
 }
