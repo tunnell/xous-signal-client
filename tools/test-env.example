@@ -37,3 +37,12 @@ export XSC_RECIPIENT_UUID="00000000-0000-0000-0000-000000000000"
 # X11 display where the Xous emulator window appears during hosted-mode
 # scans. Defaults to :10 to match the existing scan harness.
 # export DISPLAY=":10"
+
+# Demo recording: pre-seed the V1 default outgoing recipient so the
+# emulator can send the first message of a recording without first
+# having received one. UUID format only; will be skipped (with a log
+# warning) if invalid. Optional XSC_DEMO_PEER_DEVICE_ID, default 1
+# (range 1..=127). Production paths populate the recipient from
+# inbound DataMessages and ignore these vars.
+# export XSC_DEMO_PEER_UUID="00000000-0000-0000-0000-000000000000"
+# export XSC_DEMO_PEER_DEVICE_ID="1"
