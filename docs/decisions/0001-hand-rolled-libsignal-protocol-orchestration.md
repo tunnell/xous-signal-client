@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted (with open architectural alternative — see Notes).
+Accepted. ADR [0011](0011-affirm-hand-rolled-with-stop-loss-criteria.md)
+(2026-04-28) reaffirms this choice and replaces the "open architectural
+alternative" caveat with concrete stop-loss criteria for re-opening
+the migration question.
 
 ## Context
 
