@@ -7,6 +7,15 @@ Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- B2 (issue #8) closed: signal-cli libsignal `InvalidMessageException`
+  on the emulator's post-409-retry CIPHERTEXT is no longer reproducible
+  after the receive-direction priming-flake fix in PR #30 (issue #9).
+  Three consecutive `scan-send.sh` runs all PASSed leg-1 + leg-2.
+  Removed the `KNOWN_FAIL` exit-87 mapping from `tools/scan-send.sh`
+  and `tools/run-all-tests.sh`; moved B2 to `tests/known-issues.md`'s
+  "Resolved" section. `scan-send.sh` retains a defensive recognizer
+  that emits a "B2 regression?" diagnostic if the pattern ever
+  re-occurs (exits 1, not 87).
 - `tools/measure-renode.sh`: previously exited 2 (skip) when Renode
   refused to compile `LiteX_Timer_32.cs` due to a `long`/`ulong`
   mismatch against Renode 1.16.1. The cast itself is now fixed in
