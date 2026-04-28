@@ -81,8 +81,12 @@ an infinite `register_ux: lend_mut` loop (IPC format mismatch).
 ```bash
 cd ~/workdir/xous-core
 cargo xtask run sigchat:../xous-signal-client/target/release/xous-signal-client
-# Note: uses `sigchat:` xtask alias — xous-signal-client is registered
-# in xous-core's app-allowlist under that name (see "What this is").
+# Note: `sigchat` is the in-tree app name in xous-core's apps/manifest.json.
+# This is the canonical xtask invocation — not an alias around a missing
+# entry. The project-level repo is named xous-signal-client (the binary
+# path on the right of `:`); xous-core knows this app as `sigchat` (the
+# manifest key on the left). See "What this is" above for why these names
+# differ and why renaming the manifest entry would be invasive.
 ```
 
 The emulator window appears on whichever X display is active when
