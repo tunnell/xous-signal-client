@@ -5,6 +5,18 @@ Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `tools/scan-send.sh`, `tools/scan-receive.sh`, and `tools/demo-prep.sh`
+  now share a single session-clearing helper
+  (`xsc_clear_signal_cli_sessions` in `tools/test-helpers.sh`) called
+  before the priming send. Forces signal-cli to issue a PreKey-bundle
+  (envelope type 3) instead of reusing a stale session and sending a
+  SignalMessage (envelope type 1) that the rolled-back PDDB cannot
+  decrypt. Fixes the B2-sibling priming flake that caused intermittent
+  scan-send / scan-receive failures (issue #9). `tools/run-all-tests.sh`
+  now reaches Family 2 reliably without manual `demo-prep.sh` runs.
+
 ### Added
 
 - `XSC_DEMO_PEER_UUID` (and optional `XSC_DEMO_PEER_DEVICE_ID`) env-var

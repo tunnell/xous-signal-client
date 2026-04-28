@@ -13,12 +13,14 @@
 #  1. Loads tools/.env so XSC_RECIPIENT_NUMBER / XSC_SENDER_NUMBER /
 #     XSC_DEMO_PEER_UUID are visible.
 #  2. Restores the emulator's PDDB snapshot to a known-good linked state.
-#  3. Locates signal-cli's account.db for the sender account (the one
-#     signal-cli is linked to as a secondary device).
-#  4. Deletes any rows in `session` whose address column matches the
-#     emulator's account UUID (XSC_EMULATOR_UUID), forcing signal-cli's
-#     next outbound to issue a PreKey-bundle envelope.
-#  5. Runs scan-receive.sh once to re-establish a clean session and
+#  3. Verifies signal-cli is set up (accounts.json present).
+#  4. Looks up the emulator's UUID for the "To record:" hint at the end.
+#  5. Clears signal-cli sessions for the emulator UUID, via the shared
+#     xsc_clear_signal_cli_sessions helper in test-helpers.sh. This is
+#     the documented B2-sibling priming-flake mitigation (issue #9):
+#     forces signal-cli's next outbound to issue a PreKey-bundle
+#     envelope instead of a SignalMessage.
+#  6. Runs scan-receive.sh once to re-establish a clean session and
 #     warm-up the emulator's WS auth + receive worker.
 #
 # After this script exits 0, hosted mode can be launched with
@@ -38,7 +40,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=test-helpers.sh
+source "$SCRIPT_DIR/test-helpers.sh"
+ROOT="$(xsc_repo_root)"
 
 # 1. Load tools/.env if present and unsourced.
 if [[ -f "$ROOT/tools/.env" && -z "${XSC_RECIPIENT_NUMBER:-}" ]]; then
@@ -75,71 +79,51 @@ fi
 echo "Restoring PDDB snapshot..."
 cp "$PDDB_SNAPSHOT" "$HOSTED_BIN"
 
-# 3. Locate signal-cli's account.db for the sender account.
+# 3. Verify signal-cli is set up; demo-prep needs it for both the
+# session-clear (next step) and the scan-receive.sh warm-up.
 SIGNAL_CLI_ROOT="${SIGNAL_CLI_ROOT:-$HOME/.local/share/signal-cli}"
-# signal-cli stores accounts under data/<account_id>.d/account.db.
-# accounts.json maps phone numbers to account IDs; we walk it to find
-# the right one rather than guessing.
 ACCOUNTS_JSON="$SIGNAL_CLI_ROOT/data/accounts.json"
 if [[ ! -f "$ACCOUNTS_JSON" ]]; then
     echo "ERROR: signal-cli accounts.json not found: $ACCOUNTS_JSON" >&2
+    echo "       Demo prep needs signal-cli installed and linked." >&2
     exit 2
 fi
 
-SIGNAL_DB="$(python3 -c "
-import json, os, sys
-target = sys.argv[1]
-with open(sys.argv[2]) as f:
+# 4. Look up the emulator's UUID for the "To record:" hint at the end.
+# Independent of step 5's session-clear; used only to print a helpful
+# XSC_DEMO_PEER_UUID line if available.
+EMULATOR_UUID="$(python3 - "$ACCOUNTS_JSON" "$XSC_RECIPIENT_NUMBER" "$XSC_SENDER_NUMBER" <<'PYEOF' 2>/dev/null || true
+import sqlite3, json, os, sys
+accounts_json, sender, target = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(accounts_json) as f:
     data = json.load(f)
-for acc in data.get('accounts', []):
-    if acc.get('number') == target:
-        path = acc.get('path')
-        if path and not os.path.isabs(path):
-            path = os.path.join(os.path.dirname(sys.argv[2]), path)
-        # signal-cli convention: \"<path>\" is a file marker, the DB
-        # lives in \"<path>.d/account.db\".
-        db_dir = path + '.d' if not path.endswith('.d') else path
-        print(os.path.join(db_dir, 'account.db'))
-        sys.exit(0)
-sys.exit(3)
-" "$XSC_RECIPIENT_NUMBER" "$ACCOUNTS_JSON" 2>/dev/null || true)"
-
-if [[ -z "$SIGNAL_DB" || ! -f "$SIGNAL_DB" ]]; then
-    echo "ERROR: signal-cli account.db not found for $XSC_RECIPIENT_NUMBER" >&2
-    echo "       walked $ACCOUNTS_JSON; got: '${SIGNAL_DB:-<empty>}'" >&2
-    exit 2
-fi
-
-# 4. Delete sessions for the emulator UUID. This is the documented
-# B2-sibling workaround. See bug-arcs/b005 section 2026-04-28.
-# Look up the UUID via signal-cli's recipient table (JOIN by phone
-# number) so the script works with just XSC_SENDER_NUMBER set.
-echo "Clearing signal-cli sessions for emulator account ($XSC_SENDER_NUMBER)..."
-read -r EMULATOR_UUID DELETED < <(python3 -c "
-import sqlite3, sys
-db, number = sys.argv[1], sys.argv[2]
-con = sqlite3.connect(db)
-row = con.execute('SELECT aci FROM recipient WHERE number = ?', (number,)).fetchone()
-if not row or not row[0]:
-    print('NONE 0')
+sender_path = next((a.get("path") for a in data.get("accounts", []) if a.get("number") == sender), None)
+if not sender_path:
     sys.exit(0)
-uuid = row[0]
-cur = con.execute('DELETE FROM session WHERE address = ?', (uuid,))
-con.commit()
-print(uuid, cur.rowcount)
+if not os.path.isabs(sender_path):
+    sender_path = os.path.join(os.path.dirname(accounts_json), sender_path)
+db_dir = sender_path if sender_path.endswith(".d") else sender_path + ".d"
+db_path = os.path.join(db_dir, "account.db")
+if not os.path.exists(db_path):
+    sys.exit(0)
+con = sqlite3.connect(db_path)
+row = con.execute("SELECT aci FROM recipient WHERE number = ?", (target,)).fetchone()
+if row and row[0]:
+    print(row[0])
 con.close()
-" "$SIGNAL_DB" "$XSC_SENDER_NUMBER")
+PYEOF
+)"
 
-if [[ "$EMULATOR_UUID" == "NONE" ]]; then
-    echo "  WARN: no recipient row for $XSC_SENDER_NUMBER in signal-cli" >&2
-    echo "        recipient table; nothing to clear. signal-cli may not" >&2
-    echo "        have ever messaged this number, in which case there is" >&2
-    echo "        no stale session to worry about. Continuing." >&2
-else
-    echo "  uuid=$EMULATOR_UUID; deleted $DELETED row(s) from session table"
-fi
+# 5. Clear signal-cli sessions for the emulator UUID (the documented
+# B2-sibling workaround — see bug-arcs/b005 section 2026-04-28 and
+# issue #9). Forces signal-cli to issue a PreKey-bundle on next send
+# instead of reusing a stale session that the rolled-back PDDB cannot
+# decrypt. The same helper is used by tools/scan-send.sh and
+# tools/scan-receive.sh.
+echo "Clearing signal-cli sessions for emulator account ($XSC_SENDER_NUMBER)..."
+xsc_clear_signal_cli_sessions "$XSC_RECIPIENT_NUMBER" "$XSC_SENDER_NUMBER" || true
 
-# 5. Warm up: run scan-receive.sh once to re-establish a clean session.
+# 6. Warm up: run scan-receive.sh once to re-establish a clean session.
 # scan-receive.sh handles its own boot/teardown of the emulator.
 echo ""
 echo "=== Warming up via scan-receive.sh ==="
