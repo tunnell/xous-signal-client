@@ -138,21 +138,7 @@ impl SignalWS {
         let xtls = Tls::new();
         let tls_stream = xtls.stream_owned(host, sock)?;
         log::info!("tls configured");
-        let mut builder = tungstenite::http::Request::builder()
-            .method("GET")
-            .uri(url.as_str())
-            .header("Host", host)
-            .header("Connection", "Upgrade")
-            .header("Upgrade", "websocket")
-            .header("Sec-WebSocket-Version", "13")
-            .header("Sec-WebSocket-Key", tungstenite::handshake::client::generate_key())
-            .header("X-Signal-Receive-Stories", "true");
-        if let Some(credentials) = auth {
-            builder = builder.header("Authorization", format!("Basic {}", credentials));
-        }
-        let request = builder
-            .body(())
-            .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("build ws upgrade req: {e}")))?;
+        let request = build_ws_upgrade_request(url, auth)?;
         match tungstenite::client(request, tls_stream) {
             Ok((socket, response)) => {
                 log::info!("Websocket connected to: {}", url.as_str());
@@ -164,5 +150,101 @@ impl SignalWS {
                 Err(Error::from(ErrorKind::ConnectionRefused))
             }
         }
+    }
+}
+
+/// Build the HTTP/1.1 upgrade request used to open a WebSocket to
+/// Signal-Server. Pure function (no I/O), extracted from `connect` so the
+/// header set can be unit-tested.
+///
+/// `X-Signal-Receive-Stories` is set to `"false"` because xous-signal-client
+/// has no Story-rendering UI; asking the server for Story envelopes wastes
+/// bandwidth and decryption cycles on envelopes we'd silently drop.
+/// (Issue #18.)
+fn build_ws_upgrade_request(
+    url: &Url,
+    auth: Option<&str>,
+) -> Result<tungstenite::http::Request<()>, Error> {
+    let host = url
+        .host_str()
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "url missing host"))?;
+    let mut builder = tungstenite::http::Request::builder()
+        .method("GET")
+        .uri(url.as_str())
+        .header("Host", host)
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header(
+            "Sec-WebSocket-Key",
+            tungstenite::handshake::client::generate_key(),
+        )
+        .header("X-Signal-Receive-Stories", "false");
+    if let Some(credentials) = auth {
+        builder = builder.header("Authorization", format!("Basic {}", credentials));
+    }
+    builder
+        .body(())
+        .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("build ws upgrade req: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_test_url() -> Url {
+        Url::parse("wss://chat.signal.org/v1/websocket/").unwrap()
+    }
+
+    #[test]
+    fn upgrade_request_does_not_request_story_envelopes() {
+        // Signal-Server uses X-Signal-Receive-Stories on the WS handshake to
+        // decide whether to deliver Story envelopes. We set it to "false"
+        // because we have no Story UI; setting it to "true" causes the server
+        // to deliver envelopes we silently drop. Issue #18.
+        let req = build_ws_upgrade_request(&parse_test_url(), None)
+            .expect("request build should succeed");
+        let header = req
+            .headers()
+            .get("X-Signal-Receive-Stories")
+            .expect("X-Signal-Receive-Stories header should be present");
+        assert_eq!(header.to_str().unwrap(), "false");
+    }
+
+    #[test]
+    fn upgrade_request_sets_websocket_upgrade_headers() {
+        // Sanity-check the bundle of WS-upgrade headers tungstenite needs.
+        // Catches accidental drops of one of these in future refactors.
+        let req = build_ws_upgrade_request(&parse_test_url(), None)
+            .expect("request build should succeed");
+        let headers = req.headers();
+        assert_eq!(headers.get("Connection").unwrap(), "Upgrade");
+        assert_eq!(headers.get("Upgrade").unwrap(), "websocket");
+        assert_eq!(headers.get("Sec-WebSocket-Version").unwrap(), "13");
+        assert!(headers.get("Sec-WebSocket-Key").is_some());
+        assert_eq!(headers.get("Host").unwrap(), "chat.signal.org");
+    }
+
+    #[test]
+    fn upgrade_request_omits_authorization_when_unauthenticated() {
+        // Provisioning websockets connect without an Authorization header;
+        // only authenticated chat websockets have one.
+        let req = build_ws_upgrade_request(&parse_test_url(), None)
+            .expect("request build should succeed");
+        assert!(req.headers().get("Authorization").is_none());
+    }
+
+    #[test]
+    fn upgrade_request_includes_basic_auth_when_credentials_provided() {
+        let creds = "user:pass-base64-already";
+        let req = build_ws_upgrade_request(&parse_test_url(), Some(creds))
+            .expect("request build should succeed");
+        let auth = req
+            .headers()
+            .get("Authorization")
+            .expect("Authorization header should be present when creds supplied")
+            .to_str()
+            .unwrap();
+        assert_eq!(auth, format!("Basic {}", creds));
     }
 }

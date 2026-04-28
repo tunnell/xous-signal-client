@@ -7,6 +7,12 @@ Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- WebSocket upgrade handshake now sends `X-Signal-Receive-Stories: false`
+  (was `true`). xous-signal-client has no Story-rendering UI; asking the
+  server for Story envelopes wasted bandwidth and decryption cycles on
+  envelopes we silently dropped. Refactored the request-building out of
+  `SignalWS::connect` into a pure `build_ws_upgrade_request` helper so
+  the header set is unit-testable. Closes #18.
 - `tools/scan-send.sh`, `tools/scan-receive.sh`, and `tools/demo-prep.sh`
   now share a single session-clearing helper
   (`xsc_clear_signal_cli_sessions` in `tools/test-helpers.sh`) called
