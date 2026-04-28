@@ -1,5 +1,13 @@
-// HTTPS client for `PUT /v1/devices/link`. Shares the Xous trust store
-// through rustls::ClientConfig built by tls::Tls::new().client_config().
+// HTTPS client for the small set of Signal REST endpoints this client
+// invokes:
+// - `PUT /v1/devices/link` — initial secondary-device link.
+// - `PUT /v1/accounts/attributes` — post-link account-attributes refresh
+//   (issue #16). The link body already carries an `accountAttributes`
+//   sub-object; this separate call updates the canonical account record
+//   so the server's per-device and per-account views agree.
+//
+// All endpoints share the Xous trust store through rustls::ClientConfig
+// built by tls::Tls::new().client_config().
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::expect_used)]
 #![deny(clippy::panic)]
@@ -171,6 +179,80 @@ pub fn put_devices_link(
     }
 }
 
+/// PUT {base_url}/v1/accounts/attributes with Basic auth, sending the
+/// canonical AccountAttributes JSON body (issue #16).
+///
+/// Called after `put_devices_link` succeeds. The link body carries an
+/// `accountAttributes` sub-object that updates the device record, but
+/// modern Signal-Server treats the per-account record as a separate
+/// store; reference clients (signal-cli, libsignal-service-rs,
+/// Signal-Android) issue this PUT in addition to refresh the canonical
+/// account-level fields.
+///
+/// Failure is treated by the caller as non-fatal: the link itself
+/// succeeded, the message-receive path works, and the attributes can
+/// be retried on a future startup.
+///
+/// Identifier format: `<aci>.<deviceId>` (the new device's auth credentials).
+/// Returns Ok(()) on any 2xx response (Signal-Server returns 204 No Content
+/// on success).
+pub fn put_accounts_attributes(
+    base_url: &Url,
+    identifier: &str,
+    password: &str,
+    attrs: &AccountAttributes,
+) -> Result<(), Error> {
+    let mut url = base_url.clone();
+    url.set_path("/v1/accounts/attributes");
+    let url_str = url.to_string();
+
+    let client_config = Arc::new(Tls::new().client_config());
+    let agent = ureq::AgentBuilder::new()
+        .tls_config(client_config)
+        .build();
+
+    let auth_value = basic_auth_header(identifier, password);
+    log::info!(
+        "PUT {url_str} with Basic auth for identifier={identifier} (password redacted)"
+    );
+
+    let json = serde_json::to_string(attrs).map_err(|e| {
+        log::error!("AccountAttributes serialize failed: {e}");
+        Error::new(ErrorKind::Other, "failed to serialize attrs body")
+    })?;
+    log::info!("PUT /v1/accounts/attributes body len={}", json.len());
+
+    let resp = agent
+        .put(&url_str)
+        .set("Authorization", &auth_value)
+        .set("Content-Type", "application/json")
+        .send_bytes(json.as_bytes());
+
+    match resp {
+        Ok(r) => {
+            let status = r.status();
+            log::info!("PUT {url_str} -> {status}");
+            Ok(())
+        }
+        Err(ureq::Error::Status(code, r)) => {
+            let body_text = r.into_string().unwrap_or_default();
+            let preview: String = body_text.chars().take(200).collect();
+            log::error!("PUT {url_str} -> {code}: {preview}");
+            Err(Error::new(
+                ErrorKind::Other,
+                format!("PUT /v1/accounts/attributes returned {code}"),
+            ))
+        }
+        Err(e) => {
+            log::error!("PUT {url_str} request failed: {e}");
+            Err(Error::new(
+                ErrorKind::ConnectionAborted,
+                format!("PUT /v1/accounts/attributes request failed: {e}"),
+            ))
+        }
+    }
+}
+
 fn basic_auth_header(identifier: &str, password: &str) -> String {
     let raw = format!("{}:{}", identifier, password);
     format!("Basic {}", STANDARD.encode(raw.as_bytes()))
@@ -321,6 +403,45 @@ mod tests {
             decoded_str,
             "+14155552671.-1:hunter2hunter2hunter2hh"
         );
+    }
+
+    #[test]
+    fn basic_auth_supports_aci_dot_device_id_format() {
+        // The post-link `PUT /v1/accounts/attributes` (issue #16) uses the
+        // `<aci>.<deviceId>` identifier (the device's authoritative auth
+        // credentials after link returns). Sanity: the same Basic-auth
+        // constructor handles this format with no special-casing.
+        let header = basic_auth_header(
+            "12345678-1234-1234-1234-123456789abc.42",
+            "hunter2hunter2hunter2hh",
+        );
+        let decoded = STANDARD
+            .decode(&header["Basic ".len()..])
+            .expect("valid base64");
+        let decoded_str = std::str::from_utf8(&decoded).expect("utf-8");
+        assert_eq!(
+            decoded_str,
+            "12345678-1234-1234-1234-123456789abc.42:hunter2hunter2hunter2hh"
+        );
+    }
+
+    #[test]
+    fn account_attributes_clone_preserves_field_set() {
+        // AccountAttributes derives Clone (issue #16) so the link flow can
+        // pass one copy to the link body and keep another for the post-link
+        // PUT /v1/accounts/attributes call. Verify Clone is structurally
+        // sound: serializing both copies produces byte-identical JSON.
+        use crate::manager::account_attrs::build_account_attributes;
+        let attrs = build_account_attributes(
+            "name".to_string(),
+            &[0u8; 32],
+            42,
+            43,
+        )
+        .expect("attrs");
+        let json_a = serde_json::to_string(&attrs).expect("serialize a");
+        let json_b = serde_json::to_string(&attrs.clone()).expect("serialize b");
+        assert_eq!(json_a, json_b);
     }
 
     #[test]
