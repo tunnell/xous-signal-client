@@ -5,6 +5,21 @@ Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `manager::rest::put_accounts_attributes`: post-link `PUT /v1/accounts/attributes`
+  refresh. Called from `Account::link` after the link succeeds. The link body
+  already carries an `accountAttributes` sub-object that updates the device
+  record; this separate PUT updates the canonical per-account record so
+  Signal-Server's per-device and per-account views agree (matching reference
+  clients: signal-cli, libsignal-service-rs, Signal-Android). Failure is
+  non-fatal — link succeeded, message receive path works, attributes can be
+  retried on a future startup. Identifier format is `<aci>.<deviceId>`.
+  `AccountAttributes` and `Capabilities` now derive `Clone` so the link
+  flow can pass one copy to the link body and keep another for the
+  follow-up PUT. Two new unit tests pin the new identifier format and
+  the Clone serialization equivalence. Closes #16.
+
 ### Changed
 
 - `tools/measure-renode.sh`: previously exited 2 (skip) when Renode

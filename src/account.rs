@@ -326,7 +326,10 @@ impl Account {
 
         let generated = prekeys::generate_prekeys(&aci_priv, &pni_priv)?;
 
-        let body = rest::LinkDeviceRequestBody::from_parts(verification_code, attrs, &generated);
+        // Clone attrs so the post-link refresh below has a copy after the
+        // link body consumes its move-by-value (issue #16).
+        let body = rest::LinkDeviceRequestBody::from_parts(
+            verification_code, attrs.clone(), &generated);
 
         let base_url = self.chat_url()?;
         let response =
@@ -382,6 +385,25 @@ impl Account {
         // Save prekey private-key records to pddb stores so incoming messages
         // can be decrypted. Must happen AFTER a successful REST link (above).
         prekeys::save_to_pddb(&generated)?;
+
+        // Post-link account-attributes refresh (issue #16). The link body
+        // already carries an accountAttributes sub-object on the device
+        // record; this PUT updates the canonical per-account record so the
+        // server's per-device and per-account views agree. Reference
+        // clients (signal-cli, libsignal-service-rs, Signal-Android) all
+        // issue this in addition to the link.
+        //
+        // Non-fatal: the link succeeded above, the message receive path
+        // works, and the server-side per-account record can be retried on
+        // a future startup. We log the outcome but do not propagate the
+        // error.
+        let attrs_identifier = format!("{}.{}", aci.service_id, response.device_id);
+        match rest::put_accounts_attributes(&base_url, &attrs_identifier, &password, &attrs) {
+            Ok(()) => log::info!("post-link account attributes refreshed"),
+            Err(e) => log::warn!(
+                "post-link account attributes refresh failed (non-fatal): {e}"
+            ),
+        }
 
         Ok(true)
     }
