@@ -7,6 +7,15 @@ Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `tools/measure-renode.sh`: previously exited 2 (skip) when Renode
+  refused to compile `LiteX_Timer_32.cs` due to a `long`/`ulong`
+  mismatch against Renode 1.16.1. The cast itself is now fixed in
+  `tunnell/xous-core` PR #18 (issue #13) so the script gets past
+  peripheral compilation; an unrelated UART-capture limitation now
+  causes it to skip instead. The skip path is preserved (Renode is
+  optional infrastructure) and the new failure mode is documented.
+  `tests/README.md` and `tests/renode/README.md` updated. UART
+  wiring tracked as follow-up #34. Closes #13.
 - `AccountAttributes` JSON payload (sent on link / registration; pre-required
   for the upcoming `PUT /v1/accounts/attributes` in #16) now omits three
   legacy fields: `signalingKey` (obsolete since libsignal Double Ratchet

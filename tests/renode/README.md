@@ -13,14 +13,31 @@ extends that pattern with sigchat-specific scenarios.
 
 ## Prerequisites
 
-- **Renode v1.16.1 or later.** Earlier versions hit a peripheral API
-  incompatibility with current xous-core (`LiteX_Timer_32.cs` uses an
-  implicit conversion that newer Renode rejects — fix is a one-line `ulong`
-  cast, candidate for upstream contribution to betrusted-io/xous-core).
+- **Renode v1.16.1 or later.** A peripheral API incompatibility (Renode
+  1.16's `LimitTimer` requires `ulong` frequency; xous-core's
+  `LiteX_Timer_32.cs` passed `long`) was resolved on the project's
+  pinned branch in `tunnell/xous-core` PR #18 (issue #13). The fix is
+  a one-line parameter-type change and is carried locally per the
+  `tunnell/*` policy in `AGENTS.md`.
 - **Robot Framework** with the Renode keywords resource. Antmicro's repo
   ships a `tests.sh` that wires this up.
 - **A Xous image with sigchat included.** Built via `cargo xtask
   renode-image sigchat:...` from a sibling xous-core checkout.
+
+## Known limitations
+
+- **`tools/measure-renode.sh` smoke test exits 2 (skip), not 0.**
+  After the LiteX_Timer fix landed, Renode now compiles all
+  peripherals and starts both `SoC` and `EC` machines successfully.
+  But the script greps for `INFO:xous_signal_client` log lines that
+  never appear because `renode --console --disable-gui` does not
+  auto-redirect peripheral UART output. The .repl exposes three
+  UARTs (`uart`, `console`, `app_uart`); identifying which one
+  carries the kernel logger output and adding
+  `sysbus.<name> CreateFileBackend ...` to the boot recipe is open
+  follow-up work tracked as issue #34. Robot Framework-based tests
+  (`pddb-format.robot`) handle UART capture differently and are not
+  affected.
 
 ## Running
 

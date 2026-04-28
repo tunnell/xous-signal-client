@@ -495,6 +495,13 @@ separate Robot Framework test invoked via `renode-test`; see
 because the alternative — discovering on real hardware that a
 recent change panics during init — is much more expensive.
 
+The smoke test currently exits 2 (skip) rather than 0 (PASS): the
+LiteX_Timer_32.cs ulong cast that previously blocked Renode is
+fixed (issue #13, tunnell/xous-core PR #18), but routing the
+emulated binary's UART output to a captureable backend is open
+work tracked as issue #34. Once that lands, `INFO:xous_signal_client`
+lines will appear in the boot log and the smoke will pass.
+
 ## Per-family pros and cons
 
 | Family | Pros | Cons |
