@@ -7,6 +7,11 @@ Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- ADR 0011 (`docs/decisions/0011-affirm-hand-rolled-with-stop-loss-criteria.md`)
+  reaffirms the hand-rolled libsignal-protocol orchestration choice and
+  replaces ADR 0001's "open architectural alternative" caveat with concrete
+  stop-loss criteria for re-opening the libsignal-service-rs migration
+  question. ADR 0001's status line now points at 0011. Closes #23.
 - `tools/measure-renode.sh`: previously exited 2 (skip) when Renode
   refused to compile `LiteX_Timer_32.cs` due to a `long`/`ulong`
   mismatch against Renode 1.16.1. The cast itself is now fixed in
