@@ -352,14 +352,22 @@ if echo "$RECV_OUT" | grep -qF "Body: $MESSAGE"; then
     echo "  Check both phones to confirm leg-3 (user-visible)."
     exit 0
 elif echo "$RECV_OUT" | grep -qiE "InvalidMessageException.*decryption failed|ProtocolInvalidMessageException"; then
+    # B2 (issue #8) — closed 2026-04-28 after the receive-direction
+    # priming-flake sibling was fixed in PR #30 (issue #9). Three
+    # consecutive scan-send PASSes confirmed B2 send-direction is no
+    # longer reachable. We keep this branch as a *regression detector*
+    # so a future re-occurrence surfaces with a clear pointer rather
+    # than a generic "no Body line" FAIL — but exit 1 (FAIL), not 87
+    # (KNOWN_FAIL). bug-arcs/b005 is the historical record.
     echo ""
-    echo "=== leg-2 KNOWN_FAIL: signal-cli libsignal decrypt failure (B2) ==="
-    echo "  See tests/known-issues.md#b2-signal-cli-libsignal-decrypt-fail"
-    echo "  leg-1 PASS; leg-2 blocked by known issue B2."
-    echo "  iOS Signal on Precursor1 phone confirmed receiving in prior sessions."
+    echo "=== leg-2 FAIL: signal-cli libsignal decrypt failure (B2 regression?) ==="
+    echo "  Pattern matches issue #8 (closed 2026-04-28). If reproducible:"
+    echo "  - Verify session state on both ends matches (pre-test session-clear)"
+    echo "  - Re-open issue #8 with reproduction steps"
+    echo "  - See bug-arcs/b005 for historical investigation notes"
     echo ""
-    echo "RESULT: KNOWN_FAIL (B2 — see tests/known-issues.md)"
-    exit 87
+    echo "RESULT: FAIL (leg-1 PASS; leg-2 FAIL — possible B2 regression)"
+    exit 1
 else
     echo ""
     echo "=== leg-2 FAIL: no Body: line and no known-exception pattern ==="

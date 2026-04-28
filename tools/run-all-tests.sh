@@ -93,9 +93,6 @@ else
     if (( SEND_EXIT == 0 )); then
         RESULTS[send]="PASS"
         DETAIL[send]="leg-1 + leg-2 PASS; verify via decode-wire.sh + phones"
-    elif (( SEND_EXIT == 87 )); then
-        RESULTS[send]="KNOWN_FAIL"
-        DETAIL[send]="B2: signal-cli libsignal decrypt fail (see tests/known-issues.md)"
     elif (( SEND_EXIT == 2 )); then
         RESULTS[send]="SKIPPED"
         DETAIL[send]="setup failure in scan-send.sh"
