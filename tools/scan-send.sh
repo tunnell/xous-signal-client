@@ -108,6 +108,16 @@ echo ""
 # set_current_recipient, populating default.peer with signal-cli's
 # UUID. The emulator then has somewhere to send our subsequent
 # typed message back.
+#
+# Pre-step: clear signal-cli's stored sessions for the emulator UUID
+# (issue #9 / B2-sibling priming flake). Without this, signal-cli may
+# reuse a stale session that advanced past the PDDB snapshot's frozen
+# state and send a SignalMessage instead of a PreKey-bundle, which
+# the rolled-back emulator cannot decrypt.
+echo "=== Clearing signal-cli sessions for emulator UUID ==="
+xsc_clear_signal_cli_sessions "$XSC_RECIPIENT_NUMBER" "$XSC_SENDER_NUMBER" || true
+echo ""
+
 echo "=== Priming default.peer via signal-cli ==="
 PRIME_BODY="phase-r-plus prime $TS"
 if signal-cli -a "$XSC_RECIPIENT_NUMBER" send -m "$PRIME_BODY" \
