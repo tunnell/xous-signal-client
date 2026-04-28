@@ -85,6 +85,15 @@ cargo xtask run sigchat:../xous-signal-client/target/release/xous-signal-client
 # in xous-core's app-allowlist under that name (see "What this is").
 ```
 
+The emulator window appears on whichever X display is active when
+`cargo xtask run` is invoked. **`DISPLAY=:10` is often a Xvfb (virtual
+framebuffer) — the emulator runs but no window is viewable.** To check:
+`ls /tmp/.X11-unix/` shows running X servers (`X10` = `:10`); `pgrep
+-af Xvfb` confirms whether `:10` is headless. On hosts where `:10` is
+Xvfb, set `DISPLAY` to a viewable display (e.g. `localhost:11.0` for a
+TCP-forwarded X11 socket on port 6011) before launching. See also
+`tools/test-env.example` for a commented hint.
+
 ## Testing
 
 Three test families exist; see `tests/README.md` for full
