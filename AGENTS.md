@@ -99,6 +99,11 @@ documentation.
   target; this is the path for hardware-style testing without a
   physical device. State of Renode infrastructure is documented
   in `tests/README.md`.
+- `./tools/demo-prep.sh` — recording-day setup. Clears
+  signal-cli's stale sessions for the emulator's UUID
+  (B2-sibling priming-flake mitigation), restores the PDDB
+  snapshot, and warms up via `scan-receive.sh`. Run once before
+  starting a demo recording session.
 
 Hosted mode is the primary iteration loop. Renode is the gate
 before declaring something works on hardware-equivalent.
@@ -117,6 +122,12 @@ Two env vars enable detailed logging without affecting production logs:
   `/tmp/xsc-wire-dump.txt`. Read via `tools/decode-wire.sh`.
 - `XSCDEBUG_RECV=1` — `[recv-debug]` log line in `main_ws.rs` showing
   body, author, timestamp on inbound messages.
+- `XSC_DEMO_PEER_UUID` (with optional `XSC_DEMO_PEER_DEVICE_ID`,
+  default 1) — if set at startup, pre-seeds the V1 default outgoing
+  recipient so a hosted-mode session can send before first receiving.
+  Demo-only seam; production paths (real linked accounts) populate
+  the recipient via `set_current_recipient` on inbound DataMessages.
+  See `manager::outgoing::seed_demo_recipient_from_env`.
 
 Both default to off; production logs remain body-free.
 
@@ -141,6 +152,32 @@ Both default to off; production logs remain body-free.
   Verification requires the three-legged stool: wire bytes + recipient
   parse + user-visible. See `tests/README.md` Principle 3 and
   `~/workdir/xous-signal-client-notes/lessons-learned.md`.
+
+## Repository scope for git operations
+
+This project's agent has push/PR permissions only for repositories
+under `tunnell/`. Do not open PRs, issues, or push branches to
+any repository under another user/org.
+
+In particular:
+
+- `betrusted-io/xous-core` is an upstream dependency. Local patches
+  needed by this project are carried on the locally-pinned branch
+  (currently `feat/05-curve25519-dalek-4.1.3`) and tracked via PRs
+  against `tunnell/xous-core` (the project's fork). They are NOT
+  pushed to or PR'd against `betrusted-io/xous-core`.
+- The same rule applies to any other dependency repo (signal-cli,
+  libsignal, etc.) referenced during work.
+- If a change to an upstream repo seems valuable for the wider
+  project, document the rationale in
+  `xous-signal-client-notes/_open-followups/` as a candidate
+  upstream contribution. The project owner decides whether and
+  when to open the upstream PR.
+
+This rule is also enforced at the token level (the fine-grained
+PAT has no scope outside `tunnell/*`), but stating it here means
+sessions don't waste effort attempting actions that will fail at
+the API.
 
 ## Reporting protocol
 
