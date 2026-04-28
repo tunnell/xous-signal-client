@@ -7,6 +7,11 @@ Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- ADR 0011 (`docs/decisions/0011-affirm-hand-rolled-with-stop-loss-criteria.md`)
+  reaffirms the hand-rolled libsignal-protocol orchestration choice and
+  replaces ADR 0001's "open architectural alternative" caveat with concrete
+  stop-loss criteria for re-opening the libsignal-service-rs migration
+  question. ADR 0001's status line now points at 0011. Closes #23.
 - B2 (issue #8) closed: signal-cli libsignal `InvalidMessageException`
   on the emulator's post-409-retry CIPHERTEXT is no longer reproducible
   after the receive-direction priming-flake fix in PR #30 (issue #9).
