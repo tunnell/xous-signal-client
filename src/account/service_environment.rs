@@ -25,3 +25,22 @@ impl FromStr for ServiceEnvironment {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_display_round_trip() {
+        for s in &["Live", "Staging"] {
+            let parsed: ServiceEnvironment = s.parse().expect("known variant");
+            assert_eq!(format!("{}", parsed), *s);
+        }
+    }
+
+    #[test]
+    fn unknown_input_errors() {
+        assert!("Production".parse::<ServiceEnvironment>().is_err());
+        assert!("live".parse::<ServiceEnvironment>().is_err());
+    }
+}

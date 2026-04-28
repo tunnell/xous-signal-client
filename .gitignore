@@ -33,3 +33,8 @@ MANIFEST
 
 # Test environment with real account values
 tools/.env
+
+# PDDB snapshots contain real session keys and identity material.
+# Never commit.
+**/pddb-images/*.bin
+**/pddb-images/*.snapshot

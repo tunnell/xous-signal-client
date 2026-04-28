@@ -28,3 +28,23 @@ impl FromStr for LinkState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_display_round_trip() {
+        for s in &["Enabled", "EnabledWithApproval", "Disabled"] {
+            let parsed: LinkState = s.parse().expect("known variant");
+            assert_eq!(format!("{}", parsed), *s);
+        }
+    }
+
+    #[test]
+    fn unknown_input_errors() {
+        assert!("enabled".parse::<LinkState>().is_err());
+        assert!("Disable".parse::<LinkState>().is_err());
+        assert!("".parse::<LinkState>().is_err());
+    }
+}
