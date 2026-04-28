@@ -25,6 +25,16 @@ Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Three unit tests for `PddbKyberPreKeyStore::mark_kyber_pre_key_used`
+  covering libsignal's last-resort semantics: first-call writes the
+  dedup marker and returns `Ok`, second call with the same
+  `(kyber_id, ec_prekey_id, base_key)` tuple is rejected with
+  `InvalidKyberPreKeyId`, and calls with different `ec_prekey_id` or
+  different `base_key` produce independent dedup entries. The
+  implementation was already correct (commit `6c0935b`,
+  2026-04-24) — these tests close the test-coverage gap flagged as
+  issue #11. Marked `#[ignore]` like the rest of the PDDB store
+  tests (require Xous IPC server; run inside the emulator).
 - `XSC_DEMO_PEER_UUID` (and optional `XSC_DEMO_PEER_DEVICE_ID`) env-var
   seam: pre-seeds the V1 default outgoing recipient at startup so a
   hosted-mode session can send the first message without first having
