@@ -36,6 +36,15 @@ export XSC_RECIPIENT_UUID="00000000-0000-0000-0000-000000000000"
 
 # X11 display where the Xous emulator window appears during hosted-mode
 # scans. Defaults to :10 to match the existing scan harness.
+#
+# Gotcha: on many development hosts `:10` is a Xvfb (virtual framebuffer
+# = headless). If you see no window when launching the emulator, the
+# display is headless. Diagnose:
+#     ls /tmp/.X11-unix/        # which X servers exist
+#     pgrep -af Xvfb            # is :10 a Xvfb?
+# If `:10` is headless, set DISPLAY to a viewable display. On hosts that
+# expose a TCP-forwarded X11 socket on port 6011, use:
+#     export DISPLAY="localhost:11.0"
 # export DISPLAY=":10"
 
 # Demo recording: pre-seed the V1 default outgoing recipient so the
