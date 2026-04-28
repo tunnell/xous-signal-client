@@ -199,6 +199,82 @@ Each non-trivial session produces:
 
 These are working notes, not part of this repo.
 
+## Issue tracker
+
+GitHub Issues at `tunnell/xous-signal-client` is the canonical
+public source-of-truth for **open bugs and tracked technical debt**.
+Local working notes (`xous-signal-client-notes/activeContext.md`,
+`bug-arcs/`, `_open-followups/`) are institutional memory and
+debugging history; they are not pushed to any remote.
+
+When the two diverge, the tracker is what reviewers and contributors
+see. The local notes are what *we* see. Both should be kept aligned
+within reason.
+
+### When to file an issue
+
+- A bug surfaces (intermittent or otherwise) that won't be fixed
+  in the current PR.
+- Technical debt is identified that's worth tracking — protocol gaps,
+  dead code, performance polish, doc gaps, build/dev-workflow friction.
+- A discussion or decision is needed before code can be written
+  (architectural direction, design trade-off). Use the `question`
+  label and treat the issue as a decision-document scaffold.
+
+### Issue body conventions
+
+Each issue starts with:
+
+1. **Summary** — one paragraph stating what's broken or missing and
+   how it surfaces (logs, symptoms, impact).
+2. **Why this matters** — the practical consequence. This is the
+   first thing a future contributor reads when triaging.
+3. **Acceptance criteria** — checkbox list. The PR that closes the
+   issue is the PR that ticks every box.
+4. **Pointers** — links into bug arcs, ADRs, audit notes, or
+   `tests/known-issues.md` anchors so the next person doesn't have
+   to rediscover context.
+5. **Effort** — rough estimate (trivial / small / medium / multi-
+   session). Helps when picking what to tackle.
+
+Optional: reproduction steps, hypotheses, related issues.
+
+### Labels
+
+Use the GitHub default labels:
+- `bug` — something is broken or behaves incorrectly.
+- `enhancement` — missing feature or improvement.
+- `documentation` — doc gap or doc-only change.
+- `question` — decision needed before code; analysis-first.
+
+Multiple labels are fine (e.g. `bug` + `documentation` for a doc
+gap that masks a real bug).
+
+### Closing issues from PRs
+
+Every PR that resolves a tracked issue should close it via a
+`Closes #N` (or `Fixes #N` / `Resolves #N`) line in the PR
+**description** (not the title). GitHub auto-closes the issue when
+the PR merges.
+
+A PR may close multiple issues; list each on its own `Closes #N`
+line for clarity.
+
+If a PR partially addresses an issue without closing it, reference
+it via `Refs #N` instead and leave the issue open.
+
+### Bug-arc → issue handoff
+
+When a `bug-arcs/bNNN-*.md` arc gains a tracker issue, the local arc
+file becomes the *debugging journal* for that bug — wire dumps,
+hypotheses tried, dead-end branches. The issue is the *current
+state*. Cross-link both ways:
+- Issue body: `Pointers: bug-arcs/bNNN-*.md`
+- Arc file header: `Tracker: #N`
+
+When the bug is fixed, the arc file gets a "Closed YYYY-MM-DD"
+section and the issue gets a `Closes #N` PR.
+
 ## Maintenance contract
 
 Documentation in this repository is maintained as part of code
@@ -215,7 +291,9 @@ the code:
 3. **Bug fixes that resolve issues documented in
    `tests/known-issues.md` or
    `xous-signal-client-notes/bug-arcs/`** must update those documents
-   to reflect the resolution in the same PR.
+   to reflect the resolution in the same PR. If the bug has a tracker
+   issue (it should), the PR closes it via `Closes #N` in the PR body
+   — see "Issue tracker" above.
 4. **Test changes** must keep `tests/README.md` accurate (test
    counts, family descriptions, KNOWN_FAIL state).
 5. **Build / dependency changes** must update the relevant
