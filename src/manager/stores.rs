@@ -525,6 +525,87 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // Test fixtures for `mark_kyber_pre_key_used` cover the libsignal
+    // last-resort semantics: first call writes a `used:` dedup marker
+    // and returns Ok; a second call with the same (kyber, ec, base)
+    // tuple returns InvalidKyberPreKeyId; calls with different ec or
+    // base values are independent dedup entries and all succeed. See
+    // issue #11.
+
+    #[test]
+    #[ignore = "requires Xous IPC server (run via cargo xtask run)"]
+    fn kyber_prekey_mark_used_first_call_succeeds() {
+        use libsignal_protocol::KeyPair;
+        let mut rng = rand::rngs::OsRng.unwrap_err();
+        let base_kp = KeyPair::generate(&mut rng);
+
+        let mut store = test_kyber_prekey_store();
+        let result = futures::executor::block_on(store.mark_kyber_pre_key_used(
+            KyberPreKeyId::from(101u32),
+            SignedPreKeyId::from(11u32),
+            &base_kp.public_key,
+        ));
+        assert!(result.is_ok(), "first mark_used should succeed: {result:?}");
+    }
+
+    #[test]
+    #[ignore = "requires Xous IPC server (run via cargo xtask run)"]
+    fn kyber_prekey_mark_used_reuse_rejected() {
+        use libsignal_protocol::KeyPair;
+        let mut rng = rand::rngs::OsRng.unwrap_err();
+        let base_kp = KeyPair::generate(&mut rng);
+        let kyber_id = KyberPreKeyId::from(102u32);
+        let ec_id = SignedPreKeyId::from(12u32);
+
+        let mut store = test_kyber_prekey_store();
+        // First call: should succeed and write the dedup marker.
+        futures::executor::block_on(
+            store.mark_kyber_pre_key_used(kyber_id, ec_id, &base_kp.public_key)
+        ).expect("first mark_used should succeed");
+
+        // Second call with the same tuple: must be rejected.
+        let result = futures::executor::block_on(
+            store.mark_kyber_pre_key_used(kyber_id, ec_id, &base_kp.public_key)
+        );
+        assert!(
+            matches!(result, Err(SignalProtocolError::InvalidKyberPreKeyId)),
+            "reuse should return InvalidKyberPreKeyId, got: {result:?}"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires Xous IPC server (run via cargo xtask run)"]
+    fn kyber_prekey_mark_used_different_tuples_independent() {
+        use libsignal_protocol::KeyPair;
+        let mut rng = rand::rngs::OsRng.unwrap_err();
+        let base_kp_a = KeyPair::generate(&mut rng);
+        let base_kp_b = KeyPair::generate(&mut rng);
+        let kyber_id = KyberPreKeyId::from(103u32);
+
+        let mut store = test_kyber_prekey_store();
+        // Same kyber_id, two different ec_prekey_ids → independent.
+        futures::executor::block_on(store.mark_kyber_pre_key_used(
+            kyber_id, SignedPreKeyId::from(20u32), &base_kp_a.public_key,
+        )).expect("ec=20 / base=A should succeed");
+        futures::executor::block_on(store.mark_kyber_pre_key_used(
+            kyber_id, SignedPreKeyId::from(21u32), &base_kp_a.public_key,
+        )).expect("ec=21 / base=A should succeed (different ec)");
+
+        // Same kyber_id and ec_prekey_id, different base key → independent.
+        futures::executor::block_on(store.mark_kyber_pre_key_used(
+            kyber_id, SignedPreKeyId::from(20u32), &base_kp_b.public_key,
+        )).expect("ec=20 / base=B should succeed (different base)");
+
+        // But a true repeat of the (kyber=103, ec=20, base=A) tuple must still reject.
+        let result = futures::executor::block_on(store.mark_kyber_pre_key_used(
+            kyber_id, SignedPreKeyId::from(20u32), &base_kp_a.public_key,
+        ));
+        assert!(
+            matches!(result, Err(SignalProtocolError::InvalidKyberPreKeyId)),
+            "repeat of (103,20,A) should reject, got: {result:?}"
+        );
+    }
+
     fn test_session_store() -> PddbSessionStore {
         let pddb = pddb::Pddb::new();
         pddb.try_mount();
