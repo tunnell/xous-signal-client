@@ -26,8 +26,16 @@ Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Open known issues
 
 - **B2** — signal-cli libsignal decrypt failure on post-409-retry
-  CIPHERTEXT. KNOWN_FAIL via `tests/known-issues.md`. iOS Signal
-  unaffected; sync transcripts unaffected; receive direction unaffected.
+  CIPHERTEXT. KNOWN_FAIL handling stays in `tools/scan-send.sh` and
+  `tools/run-all-tests.sh`. As of the 2026-04-28 dedicated investigation,
+  the documented send-direction failure is **not currently
+  reproducible** (5/5 consecutive scan-send PASSes exercising the
+  409 retry path). The PR #4 chain-counter-advance hypothesis is
+  contradicted by the repeated successful decrypts. KNOWN_FAIL stays
+  in place because the same libsignal failure-mode string surfaced in
+  the *receive* direction during the investigation, triggered by
+  PDDB-snapshot rollback while signal-cli's session state moves
+  forward across runs. See bug arc and `tests/known-issues.md`.
 
 ## [0.0.4] - 2026-04-27 — commit `5117925` (PR #4)
 

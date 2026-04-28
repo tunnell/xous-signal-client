@@ -16,7 +16,20 @@ relevant scan script, delete the entry here, and update `tests/README.md`.
 
 ## B2 — signal-cli libsignal decrypt failure after 409-retry ciphertext {#b2-signal-cli-libsignal-decrypt-fail}
 
-**Status:** Open (as of 2026-04-27).
+**Status:** Open as KNOWN_FAIL — but **send-direction not currently
+reproducible**. As of 2026-04-28, five consecutive scan-send runs
+(all exercising the documented `409 missing=[1] → ok on attempt 2
+(devices=[1, 2])` retry path) produced `Body:` confirmation from
+signal-cli with no decrypt failure. The PR #4 hypothesis
+(409 retry advances emulator's chain past signal-cli's) is
+contradicted by these results. The KNOWN_FAIL handling stays in
+place because the 2026-04-28 investigation surfaced the same
+libsignal failure-mode string in the *receive* direction (signal-cli
+priming inbound → emulator), triggered by PDDB-snapshot rollback
+while signal-cli's session state moves forward across runs. See
+`xous-signal-client-notes/bug-arcs/b005-signal-cli-libsignal-decrypt.md`
+2026-04-28 section for the full evidence and the sharpened next
+investigation plan.
 
 **Symptom.**
 After `scan-send.sh` observes the emulator's `post: sent to ...` log line
