@@ -26,3 +26,22 @@ impl FromStr for GroupPermission {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_display_round_trip() {
+        for s in &["EveryMember", "OnlyAdmins"] {
+            let parsed: GroupPermission = s.parse().expect("known variant");
+            assert_eq!(format!("{}", parsed), *s);
+        }
+    }
+
+    #[test]
+    fn unknown_input_errors() {
+        assert!("everymember".parse::<GroupPermission>().is_err());
+        assert!("Admins".parse::<GroupPermission>().is_err());
+    }
+}

@@ -32,3 +32,30 @@ impl FromStr for TrustMode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_matches_variant_name() {
+        assert_eq!(format!("{}", TrustMode::OnFirstUse), "OnFirstUse");
+        assert_eq!(format!("{}", TrustMode::Always), "Always");
+        assert_eq!(format!("{}", TrustMode::Never), "Never");
+    }
+
+    #[test]
+    fn parse_then_display_round_trips_every_variant() {
+        for s in &["OnFirstUse", "Always", "Never"] {
+            let parsed: TrustMode = s.parse().expect("known variant");
+            assert_eq!(format!("{}", parsed), *s);
+        }
+    }
+
+    #[test]
+    fn unknown_input_errors() {
+        assert!("Sometimes".parse::<TrustMode>().is_err());
+        assert!("".parse::<TrustMode>().is_err());
+        assert!("onfirstuse".parse::<TrustMode>().is_err()); // case-sensitive
+    }
+}

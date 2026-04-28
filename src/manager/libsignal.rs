@@ -481,3 +481,76 @@ pub fn generate_identity_key_pair() -> IdentityKeyPair {
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // aes256_ctr_encrypt: AES-256 in counter mode with a zero IV. Used
+    // by DeviceNameUtil to encrypt the device name for upload during
+    // device linking. Tests below pin determinism, key-length validation,
+    // and the symmetric self-decrypt invariant.
+
+    #[test]
+    fn aes256_ctr_encrypt_rejects_short_keys() {
+        let res = aes256_ctr_encrypt(&[0u8; 31], b"x");
+        assert!(res.is_err(), "31-byte key must be rejected");
+    }
+
+    #[test]
+    fn aes256_ctr_encrypt_rejects_long_keys() {
+        let res = aes256_ctr_encrypt(&[0u8; 33], b"x");
+        assert!(res.is_err(), "33-byte key must be rejected");
+    }
+
+    #[test]
+    fn aes256_ctr_encrypt_accepts_exact_32_byte_key() {
+        let res = aes256_ctr_encrypt(&[0u8; 32], b"x");
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn aes256_ctr_encrypt_is_deterministic_for_fixed_key() {
+        let key = [0xa5u8; 32];
+        let pt = b"the quick brown fox jumps over the lazy dog";
+        let a = aes256_ctr_encrypt(&key, pt).expect("ok");
+        let b = aes256_ctr_encrypt(&key, pt).expect("ok");
+        assert_eq!(a, b, "CTR with the same key + zero IV must be deterministic");
+    }
+
+    #[test]
+    fn aes256_ctr_encrypt_preserves_plaintext_length() {
+        let key = [0u8; 32];
+        for len in [0usize, 1, 15, 16, 17, 31, 32, 33, 100] {
+            let pt = vec![0xffu8; len];
+            let ct = aes256_ctr_encrypt(&key, &pt).expect("ok");
+            assert_eq!(ct.len(), len, "len mismatch for plaintext of {len}B");
+        }
+    }
+
+    #[test]
+    fn aes256_ctr_encrypt_round_trip_self_decrypts() {
+        // CTR is its own inverse: encrypt(encrypt(p)) == p when keystream
+        // is reapplied. This verifies our implementation generates the
+        // same keystream both directions.
+        let key = [0x33u8; 32];
+        let pt = b"round-trip me, twice".to_vec();
+        let ct = aes256_ctr_encrypt(&key, &pt).expect("encrypt");
+        let pt2 = aes256_ctr_encrypt(&key, &ct).expect("decrypt");
+        assert_eq!(pt, pt2);
+    }
+
+    #[test]
+    fn aes256_ctr_keystream_advances_across_block_boundary() {
+        // For a fixed key, encrypting 17 zero bytes must NOT be 16 zero
+        // bytes followed by a repeat of byte 0 of the keystream — the
+        // counter increments and the second block uses fresh keystream.
+        let key = [0x99u8; 32];
+        let pt = vec![0u8; 17];
+        let ct = aes256_ctr_encrypt(&key, &pt).expect("ok");
+        assert_ne!(
+            ct[0], ct[16],
+            "block-2 counter byte 0 should not equal block-1 counter byte 0"
+        );
+    }
+}

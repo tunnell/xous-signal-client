@@ -36,3 +36,33 @@ impl Config {
         &self.url
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_host(s: &str) -> Host {
+        Host::parse(s).expect("valid host")
+    }
+
+    #[test]
+    fn live_environment_uses_chat_subdomain() {
+        let cfg = Config::new(parse_host("signal.org"), ServiceEnvironment::Live);
+        assert_eq!(cfg.url().as_str(), "https://chat.signal.org/");
+        assert_eq!(cfg.host().to_string(), "signal.org");
+    }
+
+    #[test]
+    fn staging_environment_uses_chat_staging_subdomain() {
+        let cfg = Config::new(parse_host("signal.org"), ServiceEnvironment::Staging);
+        assert_eq!(cfg.url().as_str(), "https://chat.staging.signal.org/");
+    }
+
+    #[test]
+    fn url_uses_https_scheme_in_both_environments() {
+        for env in &[ServiceEnvironment::Live, ServiceEnvironment::Staging] {
+            let cfg = Config::new(parse_host("signal.org"), env.clone());
+            assert_eq!(cfg.url().scheme(), "https");
+        }
+    }
+}
