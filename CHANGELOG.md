@@ -7,6 +7,22 @@ Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Conversation-list UI (Phase D, issue #24). Pressing F1 inside the
+  chat surfaces a `modals` radio-button picker listing every peer we
+  have a conversation with, sorted by last-message timestamp
+  descending, with a leading `*` marker on rows with unread messages
+  and a one-line snippet of the most recent message. Selecting a peer
+  swaps chat-lib's active dialogue to that peer's conversation, clears
+  that peer's unread counter, and persists the focused peer so
+  subsequent outbound posts from `SigChat::post` are routed there.
+  Pressing F1 again from inside any conversation re-opens the picker.
+  New `manager::peers` module owns per-peer summary metadata under a
+  new `sigchat.peers` PDDB dict. Inbound `DataMessage`s now route to
+  per-peer dialogues (`sigchat.dialogue/<uuid>`) instead of the single
+  hardcoded `default` dialogue; sync-transcripts (own outbound from
+  another linked device) route to the destination peer's dialogue.
+  Architectural rationale and the deferred-features list are in ADR
+  0012.
 - `manager::rest::put_accounts_attributes`: post-link `PUT /v1/accounts/attributes`
   refresh. Called from `Account::link` after the link succeeds. The link body
   already carries an `accountAttributes` sub-object that updates the device

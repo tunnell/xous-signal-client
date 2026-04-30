@@ -41,6 +41,11 @@ const SESSION_DICT: &'static str = "sigchat.session";
 
 const DIALOGUE_DICT: &'static str = "sigchat.dialogue";
 const DEFAULT_PEER_KEY: &'static str = "default.peer";
+/// Key under `sigchat.dialogue` storing the currently-focused peer's
+/// recipient JSON (same shape as `default.peer`). Distinct from
+/// `default.peer` so that the legacy V1 most-recent-sender pointer is
+/// preserved across migrations. See ADR 0012.
+const FOCUSED_PEER_KEY: &'static str = "current.peer";
 
 const ACI_SERVICE_ID_KEY: &'static str = "aci.service_id";
 const DEVICE_ID_KEY: &'static str = "device_id";
@@ -406,14 +411,53 @@ pub fn set_current_recipient(remote_addr: &ProtocolAddress) -> Result<(), Outgoi
     Ok(())
 }
 
-/// Read the most recent sender as a ProtocolAddress, or `NoRecipient` if no
-/// one has messaged us yet.
+/// Read the recipient that outgoing posts should be sent to. Prefers
+/// the focused-peer pointer (set when the user opens a conversation
+/// from the F1 list); falls back to the legacy V1 most-recent-sender
+/// pointer for first-message-after-receive flows that have never gone
+/// through the conversation list. Returns `NoRecipient` if neither is
+/// populated.
 pub fn current_recipient() -> Result<ProtocolAddress, OutgoingError> {
     let pddb = pddb::Pddb::new();
     pddb.try_mount();
+    if let Some(raw) = pddb_get_string(&pddb, DIALOGUE_DICT, FOCUSED_PEER_KEY) {
+        return parse_peer_json(&raw);
+    }
     let raw = pddb_get_string(&pddb, DIALOGUE_DICT, DEFAULT_PEER_KEY)
         .ok_or(OutgoingError::NoRecipient)?;
     parse_peer_json(&raw)
+}
+
+/// Persist `addr` as the user-focused peer. Called when the user opens
+/// a conversation from the F1 conversation-list. The legacy
+/// `default.peer` pointer is left untouched so that existing V1 flows
+/// keep working until the next inbound DataMessage updates it.
+pub fn set_focused_peer(addr: &ProtocolAddress) -> Result<(), OutgoingError> {
+    let pddb = pddb::Pddb::new();
+    pddb.try_mount();
+    let payload = format!(
+        "{{\"uuid\":\"{}\",\"device_id\":{}}}",
+        addr.name(),
+        u32::from(addr.device_id()),
+    );
+    pddb.delete_key(DIALOGUE_DICT, FOCUSED_PEER_KEY, None).ok();
+    let mut h = pddb.get(DIALOGUE_DICT, FOCUSED_PEER_KEY, None, true, true, None, None::<fn()>)
+        .map_err(|e| OutgoingError::Pddb(format!("get: {e}")))?;
+    h.write_all(payload.as_bytes())
+        .map_err(|e| OutgoingError::Pddb(format!("write: {e}")))?;
+    pddb.sync().ok();
+    Ok(())
+}
+
+/// Read the focused-peer pointer if one has been set (the UUID only).
+/// Used by the receive path to decide whether an inbound message is
+/// for the conversation the user is currently looking at — if it is,
+/// the message must NOT increment the unread counter.
+pub fn focused_peer_uuid() -> Option<String> {
+    let pddb = pddb::Pddb::new();
+    pddb.try_mount();
+    let raw = pddb_get_string(&pddb, DIALOGUE_DICT, FOCUSED_PEER_KEY)?;
+    extract_string_field(&raw, "uuid")
 }
 
 /// Pre-seed the default outgoing recipient from environment variables.
