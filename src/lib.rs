@@ -382,6 +382,75 @@ impl<'a> SigChat<'a> {
             .expect("failed to set dialogue");
     }
 
+    /// Set chat-lib's active dialogue to `peer_uuid`'s conversation,
+    /// clear that peer's unread counter, and persist `peer_uuid` as
+    /// the focused recipient for outbound posts. Called when the
+    /// user picks a peer from the F1 conversation-list modal, and
+    /// at startup if a previously-focused peer is restored.
+    pub fn open_peer(&self, peer_uuid: &str, device_id: u32) {
+        self.dialogue_set(Some(peer_uuid));
+        if let Err(e) = crate::manager::peers::clear_unread(peer_uuid) {
+            log::warn!("open_peer: clear_unread({peer_uuid}) failed: {e}");
+        }
+        match libsignal_protocol::DeviceId::new(device_id as u8) {
+            Ok(dev) => {
+                let addr = libsignal_protocol::ProtocolAddress::new(peer_uuid.to_string(), dev);
+                if let Err(e) = crate::manager::outgoing::set_focused_peer(&addr) {
+                    log::warn!("open_peer: set_focused_peer failed: {e}");
+                }
+            }
+            Err(e) => log::warn!("open_peer: bad device_id {device_id}: {e:?}"),
+        }
+    }
+
+    /// Show the F1 conversation-list modal: a radio-button picker
+    /// with one row per peer we have a conversation with, sorted by
+    /// `last_ts` desc. Unread peers are prefixed with `*` so the
+    /// monochrome LCD has a high-salience marker even though we're
+    /// going through the system `modals` chrome and cannot draw
+    /// custom widgets. Returns the selected peer's summary, or
+    /// `None` if the user dismissed the modal or no peers exist
+    /// yet (in which case a notification is shown instead of an
+    /// empty list).
+    pub fn show_peer_picker(&self) -> Option<crate::manager::peers::PeerSummary> {
+        let peers = crate::manager::peers::list_sorted();
+        if peers.is_empty() {
+            self.modals
+                .show_notification(
+                    "No conversations yet. Wait for an incoming message.",
+                    None,
+                )
+                .ok();
+            return None;
+        }
+
+        // Build labels and remember which label maps to which peer so
+        // we can recover the UUID after the modal returns just the
+        // chosen label string. Labels include the unread marker, the
+        // display name (currently UUID-prefix), and the snippet.
+        let mut labels: Vec<String> = Vec::with_capacity(peers.len());
+        for p in &peers {
+            let marker = if p.unread > 0 { "*" } else { " " };
+            let name_short = if p.display_name.len() > 12 {
+                &p.display_name[..12]
+            } else {
+                &p.display_name
+            };
+            let snippet_short = if p.last_snippet.len() > 32 {
+                &p.last_snippet[..32]
+            } else {
+                &p.last_snippet
+            };
+            labels.push(format!("{marker} {name_short}  {snippet_short}"));
+        }
+        for label in &labels {
+            self.modals.add_list_item(label).ok();
+        }
+        let chosen = self.modals.get_radiobutton("Conversations").ok()?;
+        let idx = labels.iter().position(|l| l == &chosen)?;
+        Some(peers[idx].clone())
+    }
+
     pub fn post(&self, text: &str) {
         self.chat.set_busy_state(true);
         self.chat.set_status_text("sending...");
@@ -406,6 +475,14 @@ impl<'a> SigChat<'a> {
                 match crate::manager::send::submit_with_retry(text, ts, &recipient, &mut http) {
                     Ok(()) => {
                         log::info!("post: sent to {}", recipient.name());
+                        // Update the peer summary so the F1 list reflects
+                        // the new last-message timestamp + snippet for
+                        // this conversation.
+                        if let Err(e) = crate::manager::peers::record_outbound(
+                            recipient.name(), ts, text,
+                        ) {
+                            log::warn!("post: peers::record_outbound failed: {e}");
+                        }
                     }
                     Err(e) => {
                         log::warn!("post: send failed for {}: {e}", recipient.name());

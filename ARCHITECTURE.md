@@ -88,6 +88,14 @@ rationale, see `docs/decisions/`. For testing methodology, see
 - `HttpClient` trait — production `UreqHttpClient`, tests `MockHttp` /
   `StatefulMockHttp`.
 
+### `src/manager/peers.rs`
+- Per-peer conversation-summary metadata for the F1 conversation-list
+  UI. Owns the `sigchat.peers` PDDB dict (one tiny JSON record per
+  peer UUID with `display_name`, `last_ts`, `last_snippet`, `unread`).
+  Updated by the receive path on inbound, by `SigChat::post` on
+  outbound, and reset to `unread=0` when the user opens a peer from
+  the F1 picker. Architectural rationale: ADR 0012.
+
 ### `src/manager/outgoing.rs`
 - Per-message Content protobuf assembly, padding (ISO-7816: 0x80 +
   zeros to multiple of 160), and per-device encrypt step.
@@ -193,8 +201,12 @@ rationale, see `docs/decisions/`. For testing methodology, see
 
 ## What's NOT here (yet)
 
-- No conversation list UI; every received message goes to a single
-  "default" dialogue.
+- The conversation-list UI is functional but minimal: F1 surfaces a
+  `modals` radio-button picker; richer per-row layout (bold-for-
+  unread, scrolling list, pin) is deferred. See ADR 0012.
+- No F2 contacts pane, F3 new-conversation entry point, F4 settings
+  pane (logout, about, username display) — each warrants its own
+  issue.
 - No outbox persistence; failed sends are local-echoed only.
 - No sealed-sender on outbound (privacy gap; envelopes go as type 1/3).
 - No DataMessage.profileKey set on outbound.

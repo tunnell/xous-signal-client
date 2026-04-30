@@ -626,10 +626,11 @@ fn deliver_content(plaintext: Vec<u8>, remote_addr: &ProtocolAddress, server_ts:
     };
 
     let delivered = if let Some(dm) = content.data_message {
-        let was_delivered = deliver_data_message(dm, remote_addr.name(), server_ts, chat_cid);
+        let was_delivered = deliver_data_message(dm, remote_addr, server_ts, chat_cid);
         if was_delivered {
             // Persist this peer as the V1 default outgoing recipient so that
-            // SigChat::post() has somewhere to send a reply.
+            // SigChat::post() has somewhere to send a reply if no peer has
+            // yet been opened from the F1 conversation list.
             if let Err(e) = crate::manager::outgoing::set_current_recipient(remote_addr) {
                 log::warn!("main_ws: set_current_recipient failed: {e}");
             }
@@ -647,20 +648,83 @@ fn deliver_content(plaintext: Vec<u8>, remote_addr: &ProtocolAddress, server_ts:
     }
 }
 
-fn deliver_data_message(dm: DataMessageProto, author: &str, server_ts: u64, chat_cid: CID) -> bool {
+/// Per-peer dialogue dict — must match `SIGCHAT_DIALOGUE` in `lib.rs`.
+const PEER_DIALOGUE_DICT: &str = "sigchat.dialogue";
+
+/// Send a `ChatOp::DialogueSet` to the chat-lib UI server from a
+/// worker-thread context where no `Chat` handle is available. Mirrors
+/// `Chat::dialogue_set` but takes only the connection ID.
+fn cf_dialogue_set(chat_cid: CID, dict: &str, key: Option<&str>) {
+    let dialogue = chat::Dialogue {
+        dict: dict.to_string(),
+        key: key.map(|k| k.to_string()),
+    };
+    if let Ok(buf) = xous_ipc::Buffer::into_buf(dialogue) {
+        let _ = buf.send(chat_cid, chat::ChatOp::DialogueSet as u32);
+    }
+}
+
+/// Add a post to a specific peer's dialogue, regardless of which
+/// dialogue is currently displayed. The receive worker uses this to
+/// deliver inbound messages to the right peer's conversation when
+/// the user is currently looking at someone else's. Caller is
+/// responsible for restoring the previously-displayed dialogue
+/// afterwards if needed.
+fn post_to_peer_dialogue(
+    chat_cid: CID,
+    peer_uuid: &str,
+    author: &str,
+    ts: u64,
+    body: &str,
+    focused_uuid: Option<&str>,
+) {
+    let is_focused = focused_uuid.map_or(false, |u| u == peer_uuid);
+    if is_focused {
+        // Currently-displayed dialogue is already this peer's; just append.
+        chat::cf_post_add(chat_cid, author, ts, body);
+        return;
+    }
+
+    // Switch chat-lib's active dialogue to the target peer, append, then
+    // switch back. Each `DialogueSet` triggers a chat-lib redraw, so this
+    // produces a brief flicker on the LCD when a message arrives for an
+    // unfocused peer — acceptable trade-off for not modifying chat-lib.
+    // Documented in ADR 0012.
+    cf_dialogue_set(chat_cid, PEER_DIALOGUE_DICT, Some(peer_uuid));
+    chat::cf_post_add(chat_cid, author, ts, body);
+    if let Some(focused) = focused_uuid {
+        cf_dialogue_set(chat_cid, PEER_DIALOGUE_DICT, Some(focused));
+    }
+    // If no peer is currently focused, leave the chat-lib pointed at the
+    // peer we just posted to. The user's next F1 selection will overwrite
+    // it; until then the LCD shows that peer's dialogue, which matches
+    // the message they just received.
+}
+
+fn deliver_data_message(
+    dm: DataMessageProto,
+    remote_addr: &ProtocolAddress,
+    server_ts: u64,
+    chat_cid: CID,
+) -> bool {
+    let author = remote_addr.name();
     let body = dm.body.unwrap_or_default();
     if body.is_empty() {
         log::warn!("main_ws: DataMessage with no body from {author} (attachment/reaction?) — not delivered to UI");
         return false;
     }
     let ts = dm.timestamp.unwrap_or(server_ts);
-    chat::cf_post_add(chat_cid, author, ts, &body);
+
+    let focused_uuid = crate::manager::outgoing::focused_peer_uuid();
+    let is_focused = focused_uuid.as_deref() == Some(author);
+
+    if let Err(e) = crate::manager::peers::record_inbound(author, ts, &body, is_focused) {
+        log::warn!("main_ws: peers::record_inbound failed for {author}: {e}");
+    }
+
+    post_to_peer_dialogue(chat_cid, author, author, ts, &body, focused_uuid.as_deref());
+
     log::info!("main_ws: delivered {} chars from {author}", body.len());
-    // Test-only structured trace: when XSCDEBUG_RECV=1 is set, emit
-    // a parseable log line that tools/scan-receive.sh can grep for.
-    // Disabled by default to keep message bodies out of production
-    // logs. Body is logged via {:?} so non-printable characters are
-    // escaped and the line stays single-line.
     if std::env::var("XSCDEBUG_RECV").as_deref() == Ok("1") {
         log::info!(
             "[recv-debug] kind=data author={} ts={} body_len={} body={:?}",
@@ -692,9 +756,23 @@ fn deliver_sync_message(sync: SyncMessageProto, server_ts: u64, chat_cid: CID) -
         return false;
     }
     let ts = dm.timestamp.unwrap_or_else(|| sent_ts.unwrap_or(server_ts));
+    if dest.is_empty() {
+        log::warn!("main_ws: SyncMessage.Sent has no destinationServiceId — dropping");
+        return false;
+    }
     // Prefix "→" marks messages sent by this device to distinguish from received.
+    // The dialogue this lands in is the recipient's — sync-sent transcripts
+    // belong in the conversation with the destination peer, not in a separate
+    // log.
     let author = format!("\u{2192}{}", &dest[..dest.len().min(8)]);
-    chat::cf_post_add(chat_cid, &author, ts, &body);
+
+    let focused_uuid = crate::manager::outgoing::focused_peer_uuid();
+    if let Err(e) = crate::manager::peers::record_outbound(&dest, ts, &body) {
+        log::warn!("main_ws: peers::record_outbound failed for {dest}: {e}");
+    }
+
+    post_to_peer_dialogue(chat_cid, &dest, &author, ts, &body, focused_uuid.as_deref());
+
     log::info!("main_ws: delivered {} chars (sync-sent to {})", body.len(), dest);
     if std::env::var("XSCDEBUG_RECV").as_deref() == Ok("1") {
         log::info!(

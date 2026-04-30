@@ -86,6 +86,15 @@ fn wrapped_main() -> ! {
         Err(e) => log::warn!("seed_demo_recipient_from_env failed: {e}"),
     }
 
+    // Restore the previously-focused peer (if any) so the user lands back
+    // in the conversation they last opened. Falls back to the legacy
+    // "default" dialogue if no peer has been focused yet — this preserves
+    // existing PDDB snapshots that pre-date per-peer routing.
+    let initial_dialogue_key = match xous_signal_client::manager::outgoing::focused_peer_uuid() {
+        Some(uuid) => uuid,
+        None => "default".to_string(),
+    };
+
     // Auto-connect if the account is already registered (e.g. headless scan).
     // This fires the same logic as the first Event::Focus would have.
     if sigchat.is_ready() {
@@ -93,7 +102,7 @@ fn wrapped_main() -> ! {
         match sigchat.connect() {
             Ok(true) => {
                 log::info!("connected to Signal Account");
-                sigchat.dialogue_set(Some("default"));
+                sigchat.dialogue_set(Some(&initial_dialogue_key));
                 if let Err(e) = chat.set_author_flags("me", EnumSet::from(AuthorFlag::Right)) {
                     log::warn!("set_author_flags(\"me\") failed: {e:?}");
                 }
@@ -123,7 +132,7 @@ fn wrapped_main() -> ! {
                                     Ok(true) => {
                                         first_focus = false;
                                         log::info!("connected to Signal Account");
-                                        sigchat.dialogue_set(Some("default"));
+                                        sigchat.dialogue_set(Some(&initial_dialogue_key));
                                         if let Err(e) = chat.set_author_flags("me", EnumSet::from(AuthorFlag::Right)) {
                                             log::warn!("set_author_flags(\"me\") failed: {e:?}");
                                         }
@@ -140,6 +149,22 @@ fn wrapped_main() -> ! {
                                 }
                             }
                             sigchat.redraw();
+                        }
+                        Some(Event::F1) => {
+                            // F1 = conversation list. Surface the peer
+                            // picker; if the user makes a selection,
+                            // switch to that peer's conversation. The
+                            // previous peer's dialogue is auto-saved by
+                            // chat-lib when DialogueSet swaps it out.
+                            if let Some(picked) = sigchat.show_peer_picker() {
+                                log::info!("F1: opening peer {}", picked.uuid);
+                                // Default to device_id=1 (primary). Fan-out
+                                // to other devices is handled by the send
+                                // path's session enumeration; this value
+                                // only seeds the legacy single-device
+                                // recipient pointer.
+                                sigchat.open_peer(&picked.uuid, 1);
+                            }
                         }
                         _ => (),
                     }
