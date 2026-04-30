@@ -18,7 +18,78 @@ into the relevant scan script with exit 87, and add the mapping to
 
 ## Currently open
 
-*(none)*
+### Stale prekey snapshot divergence after #15 lands
+
+**Symptom:** `scan-receive.sh` fails with `InvalidPreKeyId` on the
+priming envelope (and therefore the marker is never delivered, and
+the test exits 1). Specifically the emulator log shows:
+
+```
+INFO libsignal_protocol::session: processing PreKey message from <uuid>
+ERR  libsignal_protocol::session_management: Message from <uuid> failed
+     to decrypt; ... 'invalid prekey identifier'
+WARN main_ws: SS PREKEY decrypt failed from <uuid>: InvalidPreKeyId
+```
+
+**Root cause:** PR #15 (one-time prekey replenishment via
+`PUT /v2/keys`) lands the long-missing initial-fill of one-time EC
+prekeys. The first emulator session that runs against a previously-
+linked snapshot uploads 100 fresh prekeys — and persists their
+private records into that session's `hosted.bin`. The test framework
+then restores the immutable
+`hosted-linked-display-verified.bin` snapshot for the next test,
+**discarding those private records**. The server now has 100
+prekeys advertised whose private halves do not exist in the
+restored snapshot. signal-cli's session-clear (in
+`xsc_clear_signal_cli_sessions`) forces a fresh
+`PreKeyBundle` fetch, which includes one of those orphaned IDs.
+Decrypt fails.
+
+**Why this is post-#15-only:** before #15, our account had zero
+one-time EC prekeys server-side. Bundles handed to senders had
+`preKey: null`, sessions established via Kyber last-resort only,
+and `InvalidPreKeyId` was unreachable. After #15, every client
+boot replenishes — diverging the server's stock from any
+pre-#15 snapshot.
+
+**In production this cannot happen:** real users do not roll back
+their PDDB. The divergence is purely an artifact of the test
+workflow's "restore snapshot before every test" step.
+
+**Mitigation paths (any one resolves it):**
+
+1. **Regenerate the snapshot.** Boot the emulator once with PR #15
+   merged, let the replenisher run, then copy the resulting
+   `hosted.bin` over
+   `hosted-linked-display-verified.bin`. The snapshot now includes
+   the 100 fresh prekey private records, and subsequent scan-receive
+   runs land on those keys deterministically (until they too are
+   consumed and the next replenish cycle's keys take over). Single
+   one-time op.
+2. **Drain the orphaned server stock.** Each scan-receive run that
+   happens to land on a fresh-batch ID consumes one orphan from the
+   server's view; eventually the server's old-batch stock is
+   exhausted and only fresh ones remain. Slow (96 orphans currently
+   on the server for the test account; expect ~30+ runs to drain
+   given typical bundle-allocation order).
+3. **Land issue #21 (session-recovery handler).** On `InvalidPreKeyId`
+   the receiver should send a `RetryMessageRequest`, prompting the
+   sender to re-encrypt with a different bundle. This is the
+   protocol-level fix and the right long-term answer; out of scope
+   for #15 itself.
+
+**Defensive guard / tracking:** none yet. `scan-receive.sh` just
+exits 1 on this failure today. If we want to surface it as
+`KNOWN_FAIL` in the orchestrator output until one of the
+mitigations lands, add an `InvalidPreKeyId` recognizer to
+`scan-receive.sh` and the exit-87 mapping to `run-all-tests.sh`.
+For now this entry is the source-of-truth.
+
+**Pointers:**
+- ADR `docs/decisions/0013-prekey-replenishment.md` for the
+  replenishment design.
+- Issue #15 (this PR's tracker entry).
+- Issue #21 (session-recovery handler) — the long-term fix.
 
 ---
 

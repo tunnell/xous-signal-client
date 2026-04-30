@@ -21,7 +21,7 @@ use std::sync::Arc;
 use tls::Tls;
 use url::Url;
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub struct SignedPreKeyEntity {
     #[serde(rename = "keyId")]
     pub key_id: u32,
@@ -40,7 +40,7 @@ impl From<SignedPreKeyJson> for SignedPreKeyEntity {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub struct KyberPreKeyEntity {
     #[serde(rename = "keyId")]
     pub key_id: u32,
@@ -256,6 +256,159 @@ pub fn put_accounts_attributes(
 fn basic_auth_header(identifier: &str, password: &str) -> String {
     let raw = format!("{}:{}", identifier, password);
     format!("Basic {}", STANDARD.encode(raw.as_bytes()))
+}
+
+// ---- /v2/keys (issue #15: prekey replenishment) ----------------------------
+
+/// Server-reported prekey stock for a single identity (ACI or PNI).
+/// Mirrors `org.whispersystems.textsecuregcm.entities.PreKeyCount`.
+#[derive(Deserialize, Debug, PartialEq, Eq)]
+pub(crate) struct PreKeyCount {
+    pub count: u32,
+    #[serde(rename = "pqCount")]
+    pub pq_count: u32,
+}
+
+/// Single one-time EC prekey, as serialized into the `preKeys` array
+/// of `PUT /v2/keys`. Matches `ECPreKey` in Signal-Server. One-time
+/// EC prekeys are unsigned — the signature lives on `signedPreKey`
+/// which we don't rotate here.
+#[derive(Serialize, Debug)]
+pub(crate) struct OneTimePreKeyEntity {
+    #[serde(rename = "keyId")]
+    pub key_id: u32,
+    #[serde(rename = "publicKey")]
+    pub public_key: String,
+}
+
+/// Body of `PUT /v2/keys?identity=<aci|pni>`. The server merges into
+/// the existing per-identity stock — fields that are `None` / empty
+/// are ignored, NOT cleared. This is why we send only `pre_keys` for
+/// one-time EC replenishment and leave the signed / pq fields empty.
+#[derive(Serialize, Debug, Default)]
+pub(crate) struct SetKeysRequest {
+    #[serde(rename = "preKeys", skip_serializing_if = "Vec::is_empty")]
+    pub pre_keys: Vec<OneTimePreKeyEntity>,
+    #[serde(rename = "signedPreKey", skip_serializing_if = "Option::is_none")]
+    pub signed_pre_key: Option<SignedPreKeyEntity>,
+    #[serde(rename = "pqPreKeys", skip_serializing_if = "Vec::is_empty")]
+    pub pq_pre_keys: Vec<KyberPreKeyEntity>,
+    #[serde(rename = "pqLastResortPreKey", skip_serializing_if = "Option::is_none")]
+    pub pq_last_resort_pre_key: Option<KyberPreKeyEntity>,
+}
+
+/// `GET {base_url}/v2/keys?identity=aci` with Basic auth. Returns the
+/// server's view of how many one-time prekeys remain in stock for this
+/// identity. Used by [`prekey_replenish`] to decide whether to upload.
+pub(crate) fn get_keys_status(
+    base_url: &Url,
+    identifier: &str,
+    password: &str,
+) -> Result<PreKeyCount, Error> {
+    let mut url = base_url.clone();
+    url.set_path("/v2/keys");
+    url.set_query(Some("identity=aci"));
+    let url_str = url.to_string();
+
+    let client_config = Arc::new(Tls::new().client_config());
+    let agent = ureq::AgentBuilder::new().tls_config(client_config).build();
+    let auth_value = basic_auth_header(identifier, password);
+
+    log::info!("GET {url_str} with Basic auth for identifier={identifier}");
+    let resp = agent
+        .get(&url_str)
+        .set("Authorization", &auth_value)
+        .set("Accept", "application/json")
+        .call();
+    match resp {
+        Ok(r) => {
+            let status = r.status();
+            let body = r
+                .into_string()
+                .map_err(|e| Error::new(ErrorKind::Other, format!("read body: {e}")))?;
+            log::info!("GET {url_str} -> {status}, body len={}", body.len());
+            parse_prekey_count(&body)
+        }
+        Err(ureq::Error::Status(code, r)) => {
+            let body_text = r.into_string().unwrap_or_default();
+            let preview: String = body_text.chars().take(200).collect();
+            log::error!("GET {url_str} -> {code}: {preview}");
+            Err(Error::new(
+                ErrorKind::Other,
+                format!("GET /v2/keys returned {code}"),
+            ))
+        }
+        Err(e) => {
+            log::error!("GET {url_str} request failed: {e}");
+            Err(Error::new(
+                ErrorKind::ConnectionAborted,
+                format!("GET /v2/keys request failed: {e}"),
+            ))
+        }
+    }
+}
+
+/// `PUT {base_url}/v2/keys?identity=aci` with Basic auth. Body is the
+/// `SetKeysRequest` JSON above. Server returns 200 on success.
+pub(crate) fn put_keys(
+    base_url: &Url,
+    identifier: &str,
+    password: &str,
+    body: &SetKeysRequest,
+) -> Result<(), Error> {
+    let mut url = base_url.clone();
+    url.set_path("/v2/keys");
+    url.set_query(Some("identity=aci"));
+    let url_str = url.to_string();
+
+    let client_config = Arc::new(Tls::new().client_config());
+    let agent = ureq::AgentBuilder::new().tls_config(client_config).build();
+    let auth_value = basic_auth_header(identifier, password);
+
+    let json = serde_json::to_string(body).map_err(|e| {
+        log::error!("SetKeysRequest serialize failed: {e}");
+        Error::new(ErrorKind::Other, "failed to serialize SetKeysRequest")
+    })?;
+    log::info!(
+        "PUT {url_str} body len={} (preKeys={}, pqPreKeys={})",
+        json.len(),
+        body.pre_keys.len(),
+        body.pq_pre_keys.len(),
+    );
+
+    let resp = agent
+        .put(&url_str)
+        .set("Authorization", &auth_value)
+        .set("Content-Type", "application/json")
+        .send_bytes(json.as_bytes());
+
+    match resp {
+        Ok(r) => {
+            log::info!("PUT {url_str} -> {}", r.status());
+            Ok(())
+        }
+        Err(ureq::Error::Status(code, r)) => {
+            let body_text = r.into_string().unwrap_or_default();
+            let preview: String = body_text.chars().take(200).collect();
+            log::error!("PUT {url_str} -> {code}: {preview}");
+            Err(Error::new(
+                ErrorKind::Other,
+                format!("PUT /v2/keys returned {code}"),
+            ))
+        }
+        Err(e) => {
+            log::error!("PUT {url_str} request failed: {e}");
+            Err(Error::new(
+                ErrorKind::ConnectionAborted,
+                format!("PUT /v2/keys request failed: {e}"),
+            ))
+        }
+    }
+}
+
+fn parse_prekey_count(body: &str) -> Result<PreKeyCount, Error> {
+    serde_json::from_str::<PreKeyCount>(body)
+        .map_err(|e| Error::new(ErrorKind::InvalidData, format!("PreKeyCount parse: {e}")))
 }
 
 /// Replace the JSON value of `verificationCode` with a short redaction so the
@@ -493,5 +646,60 @@ mod tests {
         // publicKey is standard-no-pad base64 of a 33-byte EC key = 44 chars.
         let pk = json["aciSignedPreKey"]["publicKey"].as_str().expect("publicKey");
         assert_eq!(pk.len(), 44, "publicKey wrong length");
+    }
+
+    // ---- /v2/keys (issue #15) -------------------------------------------
+
+    #[test]
+    fn prekey_count_parses_camel_case() {
+        let body = r#"{"count":42,"pqCount":7}"#;
+        let parsed = parse_prekey_count(body).expect("parse");
+        assert_eq!(parsed, PreKeyCount { count: 42, pq_count: 7 });
+    }
+
+    #[test]
+    fn prekey_count_rejects_bad_shape() {
+        assert!(parse_prekey_count("not json").is_err());
+        // Missing fields should fail — both are required.
+        assert!(parse_prekey_count("{\"count\":1}").is_err());
+    }
+
+    #[test]
+    fn set_keys_request_with_only_pre_keys_omits_other_fields() {
+        let body = SetKeysRequest {
+            pre_keys: vec![
+                OneTimePreKeyEntity {
+                    key_id: 100,
+                    public_key: "AAA".to_string(),
+                },
+                OneTimePreKeyEntity {
+                    key_id: 101,
+                    public_key: "BBB".to_string(),
+                },
+            ],
+            ..SetKeysRequest::default()
+        };
+        let json = serde_json::to_value(&body).expect("ser");
+        // preKeys present, others absent (skip_serializing_if = empty/none).
+        assert!(json.get("preKeys").is_some());
+        assert_eq!(json["preKeys"].as_array().unwrap().len(), 2);
+        assert_eq!(json["preKeys"][0]["keyId"], 100);
+        assert_eq!(json["preKeys"][0]["publicKey"], "AAA");
+        // signedPreKey, pqPreKeys, pqLastResortPreKey must be absent (the
+        // server does merge-not-replace, so omitting preserves existing
+        // signed/Kyber stock; sending null would be different semantics).
+        assert!(json.get("signedPreKey").is_none(), "signedPreKey leaked");
+        assert!(json.get("pqPreKeys").is_none(), "pqPreKeys leaked");
+        assert!(json.get("pqLastResortPreKey").is_none(), "pqLastResortPreKey leaked");
+    }
+
+    #[test]
+    fn set_keys_request_empty_serializes_to_object() {
+        // Edge case — an empty body should still serialize, with all fields
+        // skipped. The server would no-op on a fully-empty PUT, but we
+        // guard the call site against this so it's not a wire concern.
+        let body = SetKeysRequest::default();
+        let json = serde_json::to_string(&body).expect("ser");
+        assert_eq!(json, "{}");
     }
 }

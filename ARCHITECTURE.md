@@ -88,6 +88,16 @@ rationale, see `docs/decisions/`. For testing methodology, see
 - `HttpClient` trait — production `UreqHttpClient`, tests `MockHttp` /
   `StatefulMockHttp`.
 
+### `src/manager/prekey_replenish.rs`
+- One-time EC prekey replenishment orchestrator (issue #15).
+  Threshold-driven (`PRE_KEY_MINIMUM=10`,
+  `PRE_KEY_BATCH_SIZE=100`); ACI only for now. Triggered once per
+  `Manager::start_receive` from a worker thread so it can't block
+  the receive loop. The orchestrator is closure-driven (testable
+  without HTTP); the production wrapper wires
+  `rest::get_keys_status` and `rest::put_keys`. See ADR 0013 for
+  rationale and the deferred-features list.
+
 ### `src/manager/peers.rs`
 - Per-peer conversation-summary metadata for the F1 conversation-list
   UI. Owns the `sigchat.peers` PDDB dict (one tiny JSON record per
@@ -210,7 +220,9 @@ rationale, see `docs/decisions/`. For testing methodology, see
 - No outbox persistence; failed sends are local-echoed only.
 - No sealed-sender on outbound (privacy gap; envelopes go as type 1/3).
 - No DataMessage.profileKey set on outbound.
-- No automatic prekey replenishment via `PUT /v2/keys`.
+- (Done in #15) ACI one-time prekey replenishment runs on every
+  `start_receive`. PNI replenishment, signed-prekey rotation, and
+  one-time Kyber prekey upload are deferred follow-ups.
 - No `mark_kyber_pre_key_used` real implementation (last-resort reuse
   detection is a stub).
 - No session-recovery handler for libsignal envelopes

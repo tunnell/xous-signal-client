@@ -7,6 +7,31 @@ Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- One-time EC prekey replenishment via `PUT /v2/keys` (issue #15).
+  After every `Manager::start_receive`, a worker thread queries
+  `GET /v2/keys?identity=aci` and, if the server-reported count is
+  below 10, generates a batch of 100 fresh X25519 one-time prekeys,
+  persists them to `sigchat.prekey/<id>`, and uploads them. Constants
+  match `libsignal-service-rs` (`PRE_KEY_MINIMUM=10`,
+  `PRE_KEY_BATCH_SIZE=100`). A new persistent counter at
+  `sigchat.account/aci.next_prekey_id` allocates IDs sequentially
+  with a small random initial seed, wrapping at `MEDIUM_MAX`.
+  Replenishment failures are non-fatal and log-only — the receive
+  worker is not blocked. Closes #15. Architectural rationale,
+  decision-points, and the deferred-follow-up list are in ADR 0013.
+
+  This also supplies the **initial fill** of one-time prekeys, which
+  the link flow has never done — before this PR, every peer's first
+  message to our account fell back to the Kyber-last-resort-only path
+  with degraded forward-secrecy.
+
+  **Test-workflow heads-up:** landing this PR causes
+  `scan-receive.sh` to fail with `InvalidPreKeyId` against a pre-PR
+  PDDB snapshot, because the server now advertises prekey IDs whose
+  private halves are not in the snapshot. In production this cannot
+  happen (PDDB is never rolled back). See `tests/known-issues.md`
+  entry "Stale prekey snapshot divergence after #15 lands" for
+  mitigation options.
 - Conversation-list UI (Phase D, issue #24). Pressing F1 inside the
   chat surfaces a `modals` radio-button picker listing every peer we
   have a conversation with, sorted by last-message timestamp
