@@ -35,7 +35,7 @@ now distinct. Practical implications:
   toolchain (downloads a betrusted-io fork of the Rust compiler with
   pre-built std).
 
-- **`xous-core` checked out on branch `feat/05-curve25519-dalek-4.1.3`.**
+- **`xous-core` checked out on branch `dev-for-xous-signal-client`.**
   This is non-negotiable — other branches pin `root-keys` to
   `curve25519-dalek = "=4.1.2"` which conflicts with this project's
   requirement of 4.1.3. The branch carries several local patches; see
@@ -176,7 +176,7 @@ In particular:
 
 - `betrusted-io/xous-core` is an upstream dependency. Local patches
   needed by this project are carried on the locally-pinned branch
-  (currently `feat/05-curve25519-dalek-4.1.3`) and tracked via PRs
+  (currently `dev-for-xous-signal-client`) and tracked via PRs
   against `tunnell/xous-core` (the project's fork). They are NOT
   pushed to or PR'd against `betrusted-io/xous-core`.
 - The same rule applies to any other dependency repo (signal-cli,

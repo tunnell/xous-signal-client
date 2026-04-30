@@ -22,7 +22,7 @@ git branch --show-current   # confirm intended branch
 git status                  # working tree state matches expectations
 
 cd ~/workdir/xous-core
-git branch --show-current   # must be feat/05-curve25519-dalek-4.1.3
+git branch --show-current   # must be dev-for-xous-signal-client
 ```
 
 If anything looks wrong, stop and report before doing anything else.
@@ -35,14 +35,14 @@ the wrong branch:
 
 ```bash
 cd ~/workdir/xous-core
-git checkout feat/05-curve25519-dalek-4.1.3
+git checkout dev-for-xous-signal-client
 ```
 
 ## Required checks before reporting "done"
 
 ### Check 1: Build succeeds for Xous target
 
-**Prerequisite:** xous-core on `feat/05-curve25519-dalek-4.1.3` (see Pre-flight).
+**Prerequisite:** xous-core on `dev-for-xous-signal-client` (see Pre-flight).
 
 ```bash
 cd ~/workdir/xous-signal-client
