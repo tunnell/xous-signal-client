@@ -6,6 +6,7 @@ mod link_state;
 mod main_ws;
 pub mod outgoing;
 pub mod peers;
+pub mod prekey_replenish;
 pub mod prekeys;
 pub mod rest;
 pub mod send;
@@ -331,6 +332,42 @@ impl Manager {
             .ok_or_else(|| Error::new(ErrorKind::Other, "account has no password"))?
             .to_string();
         let host = self.account.chat_host();
+
+        // Kick off one-shot ACI one-time-prekey replenishment in a
+        // worker thread BEFORE spawning the receive loop. Failure is
+        // non-fatal — log and proceed; the next start_receive will
+        // retry. Background it because the GET+PUT can stall on
+        // network up to a few seconds and start_receive is called
+        // synchronously from the UI event handler. See ADR 0013.
+        // `account.chat_host()` already produces e.g. `chat.signal.org`
+        // (Live) or `chat.staging.signal.org` (Staging) — do NOT prepend
+        // another `chat.` here, that's how the first deploy of this code
+        // ended up calling https://chat.chat.signal.org. URL is built
+        // identical to the WS endpoint used by main_ws::run_session.
+        let chat_base_url = match url::Url::parse(&format!("https://{}", host)) {
+            Ok(u) => Some(u),
+            Err(e) => {
+                log::warn!(
+                    "start_receive: https://{host} is not a valid URL ({e}); skipping prekey replenish"
+                );
+                None
+            }
+        };
+        if let Some(url) = chat_base_url {
+            let aci_for_replenish = aci.clone();
+            let password_for_replenish = password.clone();
+            std::thread::Builder::new()
+                .name("xsc-prekey-replenish".to_string())
+                .spawn(move || {
+                    let outcome = prekey_replenish::replenish_aci_one_time_prekeys(
+                        &url, &aci_for_replenish, device_id, &password_for_replenish,
+                    );
+                    log::info!("prekey_replenish outcome: {outcome:?}");
+                })
+                .map(|_| ())
+                .unwrap_or_else(|e| log::warn!("could not spawn prekey-replenish thread: {e}"));
+        }
+
         main_ws::MainWsWorker::spawn(aci, device_id, password, host, chat_cid)
             .map(|_| ())
             .map_err(|e| Error::new(ErrorKind::Other, format!("start_receive: {e}")))
