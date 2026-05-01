@@ -14,7 +14,7 @@
 # Prerequisites:
 #   - Renode v1.16.1 or later on PATH
 #   - xous-core checkout at $XOUS_CORE_PATH (default ../xous-core) on
-#     branch feat/05-curve25519-dalek-4.1.3
+#     branch dev-for-xous-signal-client
 #   - xous-signal-client release binary already built for the Xous
 #     target (run measure-size.sh first if needed)
 #

@@ -19,7 +19,7 @@ jobs:
       TARGET: riscv32imac-unknown-xous-elf
       BIN_NAME: xous-signal-client
       FEATURES: precursor
-      XOUS_CORE_BRANCH: feat/05-curve25519-dalek-4.1.3
+      XOUS_CORE_BRANCH: dev-for-xous-signal-client
     steps:
       - uses: actions/checkout@v4
         with:
