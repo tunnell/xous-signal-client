@@ -53,6 +53,13 @@ fn wrapped_main() -> ! {
         .expect("can't register server");
     log::trace!("registered with NS -- {:?}", sid);
 
+    // Defensively grant Home-key escape to the launcher. The flag is also
+    // set by pddb after PIN unlock; calling here removes the dependency on
+    // PDDB-unlock-having-happened-first, so the user is never trapped in a
+    // sigchat modal without a way to return to the launcher. Closes #42.
+    let gam = gam::Gam::new(&xns).expect("can't connect to GAM");
+    gam.allow_mainmenu().ok();
+
     let chat = Chat::new(
         gam::APP_NAME_SIGCHAT,
         gam::APP_MENU_0_SIGCHAT,
@@ -67,7 +74,7 @@ fn wrapped_main() -> ! {
         name: t!("sigchat.menu.close", locales::LANG).to_string(),
         action_conn: Some(cid),
         action_opcode: SigchatOp::Menu as u32,
-        action_payload: MenuPayload::Scalar([MenuOp::Noop as u32, 0, 0, 0]),
+        action_payload: MenuPayload::Scalar([MenuOp::CloseApp as u32, 0, 0, 0]),
         close_on_select: true,
     })
     .expect("failed add menu");
@@ -175,6 +182,12 @@ fn wrapped_main() -> ! {
                 xous::msg_scalar_unpack!(msg, menu_code, _, _, _, {
                     match FromPrimitive::from_usize(menu_code) {
                         Some(MenuOp::Noop) => {}
+                        Some(MenuOp::CloseApp) => {
+                            // User picked "close" from the app menu. Hand
+                            // focus back to the launcher; keep the app
+                            // process alive so re-focus is fast. Closes #42.
+                            gam.relinquish_focus().ok();
+                        }
                         _ => (),
                     }
                 });

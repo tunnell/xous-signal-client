@@ -161,10 +161,17 @@
         "zh": "WiFi connected *EN*"
     },
     "sigchat.wifi.warning": {
-        "en": "WiFi not connected. Entering read-only mode",
-        "en-tts": "WiFi not connected Entering read-only mode",
-        "fr": "WiFi pas connecté",
-        "ja": "WiFi not connected.  Entering read-only mode *EN*",
-        "zh": "WiFi not connected.  Entering read-only mode *EN*"
+        "en": "WiFi unavailable. Some features disabled",
+        "en-tts": "WiFi unavailable Some features disabled",
+        "fr": "WiFi indisponible. Certaines fonctionnalités désactivées",
+        "ja": "WiFi unavailable. Some features disabled *EN*",
+        "zh": "WiFi unavailable. Some features disabled *EN*"
+    },
+    "sigchat.wifi.connect_prompt": {
+        "en": "Connect to WiFi?",
+        "en-tts": "Connect to WiFi?",
+        "fr": "Se connecter au WiFi?",
+        "ja": "Connect to WiFi? *EN*",
+        "zh": "Connect to WiFi? *EN*"
     }
 }
