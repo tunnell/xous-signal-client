@@ -18,6 +18,7 @@ pub enum SigchatOp {
 #[derive(Debug, num_derive::FromPrimitive, num_derive::ToPrimitive)]
 pub enum MenuOp {
     Noop,
+    CloseApp,
 }
 
 #[allow(dead_code)]
