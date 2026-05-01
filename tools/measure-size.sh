@@ -10,7 +10,7 @@
 #   - riscv64-unknown-elf binutils (size, readelf) on PATH
 #   - cargo-bloat installed (cargo install cargo-bloat)
 #   - xous-core checkout at ../xous-core (or $XOUS_CORE_PATH) on
-#     branch feat/05-curve25519-dalek-4.1.3
+#     branch dev-for-xous-signal-client
 #   - Python 3.11+ (or pip install tomli for older)
 #
 # Output:

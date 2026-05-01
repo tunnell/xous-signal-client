@@ -59,7 +59,7 @@ section). The infrastructure is preserved for future use.
 
 1. Install the Rust toolchain xous-core uses (see `xous-core`'s
    own README for the pinned toolchain). The project pins to
-   `feat/05-curve25519-dalek-4.1.3` of `tunnell/xous-core` for path
+   `dev-for-xous-signal-client` of `tunnell/xous-core` for path
    dependencies — see `TESTING-PLAN.md` Pre-flight.
 2. (Optional, for E2E) Install `signal-cli`, set up two test Signal
    accounts, link them, and populate `tools/.env`. See

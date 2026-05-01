@@ -63,6 +63,18 @@ Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Renamed the pinned `tunnell/xous-core` branch from
+  `feat/05-curve25519-dalek-4.1.3` to `dev-for-xous-signal-client`.
+  The old name encoded its leading patch (curve25519-dalek 4.1.2 →
+  4.1.3 bump); the branch now carries multiple unrelated patches
+  (Renode `LiteX_Timer_32` cast, TLS refactor + revert, chat-lib
+  `set_author_flags`) and the purpose-named ref is more
+  discoverable. Updated AGENTS.md, TESTING-PLAN.md, tests/README.md,
+  the four `tools/*.sh` scan scripts, and the `XOUS_CORE_BRANCH`
+  env in both size-CI workflows. ADR 0012 retains the old name as
+  historical record (MADR convention: ADRs are immutable). The
+  GitHub branch rename was atomic; no PRs were affected (none were
+  open against the old ref).
 - ADR 0011 (`docs/decisions/0011-affirm-hand-rolled-with-stop-loss-criteria.md`)
   reaffirms the hand-rolled libsignal-protocol orchestration choice and
   replaces ADR 0001's "open architectural alternative" caveat with concrete
@@ -143,7 +155,7 @@ Changelog](https://keepachangelog.com/en/1.1.0/).
   `chat.set_author_flags("me", AuthorFlag::Right)` after `dialogue_set`
   so outgoing local-echo bubbles render on the conventional sender
   side. Depends on the `Chat::set_author_flags` API added to chat-lib
-  on the project's pinned `feat/05-curve25519-dalek-4.1.3` branch
+  on the project's pinned `dev-for-xous-signal-client` branch
   (tracked in `xous-signal-client-notes/techContext.md` patch table).
 - `tools/demo-prep.sh`: recording-day setup script. Restores the PDDB
   snapshot, looks up the emulator's UUID via signal-cli's `recipient`

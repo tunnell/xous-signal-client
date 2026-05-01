@@ -35,7 +35,7 @@
 #   - X11 display (default :10) where the emulator window appears
 #   - python3 (ctypes; usually present)
 #   - xous-core checkout at $XOUS_CORE_PATH on
-#     feat/05-curve25519-dalek-4.1.3
+#     dev-for-xous-signal-client
 #
 # Output:
 #   - Emulator scan log to /tmp/xsc-recv-<timestamp>.log
