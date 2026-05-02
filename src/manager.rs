@@ -13,6 +13,7 @@ pub mod send;
 mod signal_ws;
 pub mod stores;
 mod trust_mode;
+pub mod cancellation;
 pub mod wifi_observer;
 mod ws_server;
 
