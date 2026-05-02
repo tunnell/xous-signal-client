@@ -13,6 +13,7 @@ pub mod send;
 mod signal_ws;
 pub mod stores;
 mod trust_mode;
+pub mod wifi_observer;
 mod ws_server;
 
 use base64::{engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD}, Engine as _};
