@@ -18,6 +18,7 @@ pub mod wifi_observer;
 mod ws_server;
 
 use base64::{engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD}, Engine as _};
+use cancellation::{CancellationHandle, CancellationToken, FlapWatcher};
 use crate::Account;
 pub use config::Config;
 use group_permission::GroupPermission;
@@ -29,6 +30,7 @@ use std::io::{Error, ErrorKind};
 use std::time::Duration;
 pub use trust_mode::TrustMode;
 use tungstenite::Message;
+use wifi_observer::WifiObserver;
 use ws_server::{SignalWsServer, WsResult};
 
 // Structure modeled on signal-cli by AsamK <asamk@gmx.de> and contributors - https://github.com/AsamK/signal-cli.
@@ -170,14 +172,95 @@ impl Manager {
     #[allow(dead_code)]
     pub fn link(&mut self, name: &str) -> Result<bool, Error> {
         let link_err = Error::new(ErrorKind::Other, "failed to link device");
-        let mut host = self.config.url().clone();
-        let mut ws = match SignalWS::new_provision(&mut host) {
-            Ok(ws) => ws,
+
+        // Subscribe to WiFi state changes for cooperative flap recovery.
+        // If subscription fails (e.g. net service unavailable), fall
+        // back to a test-mode observer that never sees real broadcasts —
+        // the link path then runs as it did before flap recovery
+        // existed (no auto-retry, errors propagate).
+        let observer = match WifiObserver::new() {
+            Ok(o) => o,
             Err(e) => {
-                log::info!("failed to connect to server: {e}");
-                return Err(e);
+                log::warn!(
+                    "WifiObserver init failed: {e}; flap recovery disabled for this link"
+                );
+                WifiObserver::for_test()
             }
         };
+
+        let token = CancellationToken::new();
+        let attempt = self.provision_one_attempt(&observer, token.handle());
+
+        let (registration, identity_key_pair) = match attempt {
+            Ok(v) => v,
+            Err(e) => {
+                if token.is_cancelled() {
+                    log::warn!(
+                        "provisioning interrupted by WiFi flap; waiting for reconnect to retry once"
+                    );
+                    if let Err(we) =
+                        observer.wait_for_connection(Duration::from_secs(120))
+                    {
+                        log::error!("flap-recovery wait_for_connection failed: {we}");
+                        return Err(link_err);
+                    }
+                    log::info!("WiFi reconnected; retrying provisioning once");
+                    let token2 = CancellationToken::new();
+                    match self.provision_one_attempt(&observer, token2.handle()) {
+                        Ok(v) => v,
+                        Err(e2) => {
+                            log::warn!("provisioning retry failed: {e2}");
+                            return Err(link_err);
+                        }
+                    }
+                } else {
+                    return Err(e);
+                }
+            }
+        };
+
+        log::info!("Registration message received from host");
+        match libsignal::ProvisionMessage::decode(identity_key_pair, registration) {
+            Ok(provision_msg) => match self.account.link(name, provision_msg) {
+                Ok(result) => Ok(result),
+                Err(e) => {
+                    log::warn!("linking error: {e}");
+                    Ok(false)
+                }
+            },
+            Err(e) => {
+                log::error!("failed to decrypt ProvisionMessage: {e}");
+                Err(link_err)
+            }
+        }
+    }
+
+    /// One end-to-end provisioning attempt: TLS+WS connect, read
+    /// ProvisioningUuid, build device-link URI, show QR modal, wait
+    /// for the encrypted ProvisionEnvelope.
+    ///
+    /// Returns the encrypted envelope bytes plus the identity key pair
+    /// the caller must use to decrypt them.
+    ///
+    /// `observer` drives flap detection. A `FlapWatcher` listener is
+    /// attached for the lifetime of this call; on `Connected →
+    /// !Connected` the watcher (a) flips `token`, (b) sends a
+    /// non-blocking flap-cancel to the WS worker so the parked
+    /// `wait_and_take_binary` returns `WsResult::Cancelled` promptly
+    /// instead of waiting for the underlying TCP RTO. Caller decides
+    /// whether to retry by inspecting `token.is_cancelled()`.
+    fn provision_one_attempt(
+        &self,
+        observer: &WifiObserver,
+        token: CancellationHandle,
+    ) -> Result<(Vec<u8>, libsignal::IdentityKeyPair), Error> {
+        let link_err = || Error::new(ErrorKind::Other, "failed to link device");
+
+        let mut host = self.config.url().clone();
+        let mut ws = SignalWS::new_provision(&mut host).map_err(|e| {
+            log::info!("failed to connect to server: {e}");
+            e
+        })?;
         log::info!("provisioning websocket established to {host}");
 
         // Initial UUID read — on the main thread. Modal is not up yet so we
@@ -188,18 +271,18 @@ impl Manager {
                 Err(e) => {
                     log::error!("failed to decode ProvisioningUuid: {e}");
                     ws.close();
-                    return Err(link_err);
+                    return Err(link_err());
                 }
             },
             Ok(_) => {
                 log::warn!("unexpected Provisioning msg.");
                 ws.close();
-                return Err(link_err);
+                return Err(link_err());
             }
             Err(e) => {
                 log::warn!("initial UUID read: {e}");
                 ws.close();
-                return Err(link_err);
+                return Err(link_err());
             }
         };
 
@@ -216,7 +299,7 @@ impl Manager {
             if b.len() != 33 {
                 log::error!("identity pub key len={}, expected 33", b.len());
                 ws.close();
-                return Err(link_err);
+                return Err(link_err());
             }
             STANDARD_NO_PAD.encode(&b)
         };
@@ -236,7 +319,7 @@ impl Manager {
             Err(e) => {
                 log::info!("{e}");
                 ws.close();
-                return Err(link_err);
+                return Err(link_err());
             }
         };
         log::info!("device_link_uri: {device_link_uri}");
@@ -246,7 +329,7 @@ impl Manager {
             Err(e) => {
                 log::error!("failed to connect to XousNames: {e:?}");
                 ws.close();
-                return Err(link_err);
+                return Err(link_err());
             }
         };
         let modals = match Modals::new(&xns) {
@@ -254,7 +337,7 @@ impl Manager {
             Err(e) => {
                 log::error!("failed to connect to Modals: {e:?}");
                 ws.close();
-                return Err(link_err);
+                return Err(link_err());
             }
         };
 
@@ -266,9 +349,21 @@ impl Manager {
             Ok(s) => s,
             Err(e) => {
                 log::error!("ws_server spawn failed: {e}");
-                return Err(link_err);
+                return Err(link_err());
             }
         };
+
+        // Wire the FlapWatcher AFTER the server is alive: on a
+        // Connected → !Connected transition, flip the caller's token
+        // and send a non-blocking flap-cancel to the WS worker. The
+        // worker stops driving the WS and primes a Cancelled result so
+        // the next wait_and_take_binary returns promptly.
+        let cancel_handle = server.cancel_handle();
+        let token_for_listener = token.clone();
+        let _watcher = FlapWatcher::new(observer, move || {
+            token_for_listener.cancel();
+            cancel_handle.cancel_flap();
+        });
 
         if let Err(e) = modals.show_notification(
             t!("sigchat.account.link.scan", locales::LANG),
@@ -276,7 +371,7 @@ impl Manager {
         ) {
             log::error!("QR modal failed: {e:?}");
             let _ = server.cancel();
-            return Err(link_err);
+            return Err(link_err());
         }
 
         let result = server.wait_and_take_binary();
@@ -285,38 +380,25 @@ impl Manager {
         // SID, and exits.
         let _ = server.cancel();
 
-        let registration = match result {
-            WsResult::Binary(b) => b,
+        match result {
+            WsResult::Binary(b) => Ok((b, identity_key_pair)),
             WsResult::Closed => {
                 log::warn!("ws closed before ProvisionEnvelope");
-                return Err(link_err);
+                Err(link_err())
             }
             WsResult::TimedOut => {
                 log::warn!("ws timed out waiting for ProvisionEnvelope");
-                return Err(link_err);
+                Err(link_err())
             }
             WsResult::Cancelled => {
                 log::warn!("ws cancelled before ProvisionEnvelope");
-                return Err(link_err);
+                // Surface as Interrupted so the caller can distinguish
+                // flap-cancellation from other failures and retry.
+                Err(Error::new(ErrorKind::Interrupted, "ws cancelled by flap watcher"))
             }
             WsResult::Error(e) => {
                 log::warn!("ws error: {e}");
-                return Err(link_err);
-            }
-        };
-
-        log::info!("Registration message received from host");
-        match libsignal::ProvisionMessage::decode(identity_key_pair, registration) {
-            Ok(provision_msg) => match self.account.link(name, provision_msg) {
-                Ok(result) => Ok(result),
-                Err(e) => {
-                    log::warn!("linking error: {e}");
-                    Ok(false)
-                }
-            },
-            Err(e) => {
-                log::error!("failed to decrypt ProvisionMessage: {e}");
-                Err(link_err)
+                Err(link_err())
             }
         }
     }
