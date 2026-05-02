@@ -5,6 +5,16 @@ authors = ["tunnell"]
 edition = "2018"
 description = "Unofficial Signal client for Xous on Precursor"
 
+# The bin requires precursor or full hosted gam (latter not on by default —
+# see [features].hosted comment on why gam/hosted is omitted). Without an
+# explicit required-features gate, `cargo test --features hosted --tests`
+# tries to compile the bin and fails on `gam::APP_NAME_SIGCHAT`. Adding the
+# gate skips the bin in test runs that don't need it.
+[[bin]]
+name = "xous-signal-client"
+path = "src/main.rs"
+required-features = ["precursor"]
+
 # Dependency versions enforced by Cargo.lock.
 [dependencies]
 log = "0.4.14"
