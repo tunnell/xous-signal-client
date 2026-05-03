@@ -96,6 +96,10 @@ hosted = [
     "tls/hosted",
 ]
 
+[profile.release]
+debug = true
+strip = false
+
 [patch.crates-io]
 sha2 = { git = "https://github.com/betrusted-io/hashes.git", branch = "sha2-v0.10.8-xous" }
 sha2_legacy = { git = "https://github.com/RustCrypto/hashes.git", tag = "sha2-v0.9.9", package = "sha2" }
