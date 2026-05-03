@@ -222,7 +222,7 @@ impl Manager {
         log::info!("Registration message received from host");
         match libsignal::ProvisionMessage::decode(identity_key_pair, registration) {
             Ok(provision_msg) => {
-                log::info!("iter-A.2.3 phase: post_envelope_decode");
+                crate::phase_log!("iter-A.2.3 phase: post_envelope_decode");
                 match self.account.link(name, provision_msg) {
                     Ok(result) => Ok(result),
                     Err(e) => {

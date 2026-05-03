@@ -1,3 +1,36 @@
+/// Diagnostic phase marker. Expands to `log::info!` when the
+/// `debug-instrumentation` feature is enabled; no-op otherwise.
+///
+/// Used by the iter-A.2.x phase markers in `Account::new`,
+/// `Account::link`, and `Manager::link`. iter-A.2.4 gates these
+/// to test the H2 hypothesis from the speculative-analysis note
+/// (`xous-signal-client-notes/_open-followups/2026-05-03-iter-A2-3-tls-probe-analysis.md`):
+/// whether the iter-A.2.3 TLS-probe hardware wedge is caused by
+/// the binary-layout shift from the ~17 additional `log::info!`
+/// sites. When the feature is off, the format strings + arguments
+/// are compiled out entirely.
+///
+/// Implemented as two cfg-gated macro_rules! definitions because
+/// `#[cfg]` on an expression body is unstable in stable Rust.
+#[cfg(feature = "debug-instrumentation")]
+#[macro_export]
+macro_rules! phase_log {
+    // Drop trailing semicolon — log::info! already evaluates to ()
+    // and adding ; would make the macro invalid in expression
+    // position (e.g., `Ok(()) => phase_log!(...)` match arms).
+    ($($arg:tt)*) => {
+        log::info!($($arg)*)
+    };
+}
+#[cfg(not(feature = "debug-instrumentation"))]
+#[macro_export]
+macro_rules! phase_log {
+    // Expand to a unit-typed block so the macro can be used in
+    // expression position (e.g., as a match-arm body) without a
+    // syntax error. `{}` evaluates to `()`.
+    ($($arg:tt)*) => {{ }};
+}
+
 mod account;
 pub mod api;
 pub mod manager;

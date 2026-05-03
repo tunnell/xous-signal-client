@@ -107,8 +107,9 @@ impl Account {
         // explicit delete_key for None-semantic fields (clears stale on
         // existing dict; no-op on fresh) + set_new for Some-semantic
         // fields (no per-call sync) + single durability sync at end.
+        #[cfg(feature = "debug-instrumentation")]
         let init_start = std::time::Instant::now();
-        log::info!("iter-A.2.3 phase: pre_link_init_start");
+        crate::phase_log!("iter-A.2.3 phase: pre_link_init_start");
 
         // 13 None-semantic fields: explicit delete_key clears stale
         // values on existing-dict path; no-op (NotFound, ignored) on
@@ -152,7 +153,7 @@ impl Account {
             Error::new(ErrorKind::Other, "PDDB sync failed after Account::new init")
         })?;
 
-        log::info!(
+        crate::phase_log!(
             "iter-A.2.3 phase: pre_link_init_complete keys=20 elapsed_ms={}",
             init_start.elapsed().as_millis()
         );
@@ -366,10 +367,11 @@ impl Account {
         log_identity_chain("aci", &aci_priv, &aci.djb_identity_key.key);
         log_identity_chain("pni", &pni_priv, &pni.djb_identity_key.key);
 
-        log::info!("iter-A.2.3 phase: prekey_gen_start");
+        crate::phase_log!("iter-A.2.3 phase: prekey_gen_start");
+        #[cfg(feature = "debug-instrumentation")]
         let prekey_gen_start = std::time::Instant::now();
         let generated = prekeys::generate_prekeys(&aci_priv, &pni_priv)?;
-        log::info!(
+        crate::phase_log!(
             "iter-A.2.3 phase: prekey_gen_complete elapsed_ms={}",
             prekey_gen_start.elapsed().as_millis()
         );
@@ -379,12 +381,13 @@ impl Account {
         let body = rest::LinkDeviceRequestBody::from_parts(
             verification_code, attrs.clone(), &generated);
 
-        log::info!("iter-A.2.3 phase: prekey_upload_start");
+        crate::phase_log!("iter-A.2.3 phase: prekey_upload_start");
+        #[cfg(feature = "debug-instrumentation")]
         let upload_start = std::time::Instant::now();
         let base_url = self.chat_url()?;
         let response =
             rest::put_devices_link(&base_url, &provisioning_msg.number, &password, &body)?;
-        log::info!(
+        crate::phase_log!(
             "iter-A.2.3 phase: prekey_upload_complete elapsed_ms={}",
             upload_start.elapsed().as_millis()
         );
@@ -420,7 +423,8 @@ impl Account {
         // credentials set durable in one flush. See bug #2 in
         // `xous-signal-client-notes/_open-followups/2026-05-02-demo-arc-bugs.md`
         // for the discovery arc.
-        log::info!("iter-A.2.3 phase: post_link_persist_start");
+        crate::phase_log!("iter-A.2.3 phase: post_link_persist_start");
+        #[cfg(feature = "debug-instrumentation")]
         let persist_start = std::time::Instant::now();
         self.set_new(PASSWORD_KEY, Some(&password))?;
         self.set_new(DEVICE_ID_KEY, Some(&response.device_id.to_string()))?;
@@ -449,7 +453,7 @@ impl Account {
 
         self.set_new(REGISTERED_KEY, Some(&true.to_string()))?;
 
-        log::info!(
+        crate::phase_log!(
             "iter-A.2.3 phase: post_link_persist_complete keys=18 elapsed_ms={}",
             persist_start.elapsed().as_millis()
         );
@@ -465,17 +469,18 @@ impl Account {
             Error::new(ErrorKind::Other, "PDDB sync failed after credentials persist")
         })?;
 
-        log::info!(
+        crate::phase_log!(
             "iter-A.2.3 phase: post_link_sync_complete total_elapsed_ms={}",
             persist_start.elapsed().as_millis()
         );
 
         // Save prekey private-key records to pddb stores so incoming messages
         // can be decrypted. Must happen AFTER a successful REST link (above).
-        log::info!("iter-A.2.3 phase: prekey_save_start");
+        crate::phase_log!("iter-A.2.3 phase: prekey_save_start");
+        #[cfg(feature = "debug-instrumentation")]
         let prekey_save_start = std::time::Instant::now();
         prekeys::save_to_pddb(&generated)?;
-        log::info!(
+        crate::phase_log!(
             "iter-A.2.3 phase: prekey_save_complete elapsed_ms={}",
             prekey_save_start.elapsed().as_millis()
         );
@@ -492,10 +497,10 @@ impl Account {
         // a future startup. We log the outcome but do not propagate the
         // error.
         let attrs_identifier = format!("{}.{}", aci.service_id, response.device_id);
-        log::info!("iter-A.2.3 phase: attrs_refresh_start");
+        crate::phase_log!("iter-A.2.3 phase: attrs_refresh_start");
         let attrs_start = std::time::Instant::now();
         match rest::put_accounts_attributes(&base_url, &attrs_identifier, &password, &attrs) {
-            Ok(()) => log::info!(
+            Ok(()) => crate::phase_log!(
                 "iter-A.2.3 phase: attrs_refresh_complete elapsed_ms={}",
                 attrs_start.elapsed().as_millis()
             ),
@@ -505,7 +510,7 @@ impl Account {
             ),
         }
 
-        log::info!("iter-A.2.3 phase: link_complete");
+        crate::phase_log!("iter-A.2.3 phase: link_complete");
         Ok(true)
     }
 

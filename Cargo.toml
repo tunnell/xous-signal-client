@@ -105,6 +105,20 @@ hosted = [
     "modals/hosted",
     "tls/hosted",
 ]
+# Diagnostic instrumentation for the iter-A.2.x phase markers in
+# Account::new, Account::link, and Manager::link. When enabled the
+# `phase_log!` macro expands to `log::info!`; when disabled the macro
+# expands to a no-op (and the format strings + arguments are
+# compiled out entirely). Used to test the H2 hypothesis from
+# `xous-signal-client-notes/_open-followups/2026-05-03-iter-A2-3-tls-probe-analysis.md`:
+# whether the iter-A.2.3 TLS-probe hardware wedge is caused by the
+# binary-layout shift from the additional ~17 log::info! sites.
+#
+# iter-A.2.4 ships with this feature OFF as a single-variable test
+# of H2. If iter-A.2.4 reaches further than iter-A.2.3 on hardware,
+# H2 is supported and the right fix is to keep this feature gated
+# to debug builds only.
+debug-instrumentation = []
 
 [profile.release]
 debug = true
