@@ -58,6 +58,18 @@ impl Manager {
     /// * `account` - Specify your phone number, that will be your identifier. The phone number must include the country calling code, i.e. the number must start with a "+" sign.
     ///
     pub fn new(account: Account, trust_mode: TrustMode) -> Manager {
+        // Renode-test scaffold: when the feature is on, the persisted
+        // host is an IP literal (192.168.100.1 — the TAP-host gateway).
+        // `Config::new` always prepends `chat.` to the host_base, which
+        // produces `https://chat.192.168.100.1` — invalid as either a
+        // hostname or an IP literal — and panics in `Url::parse` with
+        // `InvalidIpv4Address`. Route through `Config::renode_test`
+        // instead, which builds `https://192.168.100.1/` directly.
+        // Production code path (no renode-test) hits `signal.org` and
+        // `chat.signal.org` is a valid hostname, so `Config::new` works.
+        #[cfg(feature = "renode-test")]
+        let config = Config::renode_test(account.host().clone());
+        #[cfg(not(feature = "renode-test"))]
         let config = Config::new(
             account.host().clone(),
             account.service_environment().clone(),
