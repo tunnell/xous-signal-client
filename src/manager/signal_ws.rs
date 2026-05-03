@@ -133,8 +133,12 @@ impl SignalWS {
     ) -> Result<WebSocket<StreamOwned<ClientConnection, TcpStream>>, Error> {
         log::info!("attempting websocket connection to {}", url.as_str());
         let host = url.host_str().expect("failed to extract host from url");
-        let sock = TcpStream::connect((host, 443))?;
-        log::info!("tcp connected to {host}");
+        #[cfg(feature = "renode-test")]
+        let port = crate::manager::renode_test::RENODE_TEST_PORT;
+        #[cfg(not(feature = "renode-test"))]
+        let port = 443u16;
+        let sock = TcpStream::connect((host, port))?;
+        log::info!("tcp connected to {host}:{port}");
         #[cfg(feature = "renode-test")]
         let tls_stream = {
             log::warn!("renode-test feature active: TLS cert verification disabled");

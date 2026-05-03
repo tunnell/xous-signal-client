@@ -32,6 +32,13 @@ use rustls::{ClientConfig, ClientConnection, DigitallySignedStruct, SignatureSch
 /// server to. Matches the default `--host` in `signal_mock.py`.
 pub const RENODE_TEST_HOST: &str = "192.168.100.1";
 
+/// Port the stand-in server listens on. Matches `signal_mock.py`'s
+/// default (`--port 8443`). Production sigchat connects on 443 (the
+/// hard-coded port in `signal_ws::connect`); renode-test redirects
+/// to the unprivileged 8443 because the stand-in runs as a normal
+/// user and can't bind to the well-known port without CAP_NET_BIND_SERVICE.
+pub const RENODE_TEST_PORT: u16 = 8443;
+
 /// NoOp TLS server-cert verifier — accepts ANY presented certificate,
 /// any name, any signature. Trivially insecure. Compiled into the
 /// binary only when the `renode-test` feature is enabled, which is

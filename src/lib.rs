@@ -143,6 +143,18 @@ impl<'a> SigChat<'a> {
     ///
     fn account_setup(&mut self) -> Result<Account, Error> {
         log::info!("Attempting to setup a Signal Account");
+        // Renode-test gate 3: skip the radio-button modal and go straight
+        // to account_link (the path the test harness exercises). The
+        // production code below shows a [Link, Register, Offline] modal
+        // and waits for user selection — without input that blocks
+        // forever under the harness.
+        #[cfg(feature = "renode-test")]
+        {
+            log::warn!("renode-test gate 3: account_setup auto-picking 'Link' (no radio modal)");
+            let config = signal_config();
+            return self.account_link(&config);
+        }
+        #[cfg(not(feature = "renode-test"))]
         self.modals
             .add_list_item(t!("sigchat.account.link", locales::LANG))
             .expect("failed add list item");
@@ -306,6 +318,18 @@ impl<'a> SigChat<'a> {
     /// the name provided by the user
     ///
     fn name_modal(&self, default_name: &str, prompt: &str) -> String {
+        // Renode-test gate 4: skip the TextEntry modal and use the
+        // default name directly. The production modal blocks for user
+        // input which the harness can't supply.
+        #[cfg(feature = "renode-test")]
+        {
+            log::warn!(
+                "renode-test gate 4: name_modal auto-supplying default name {:?} (no TextEntry modal). prompt was: {}",
+                default_name, prompt
+            );
+            return default_name.to_string();
+        }
+        #[cfg(not(feature = "renode-test"))]
         match self
             .modals
             .alert_builder(prompt)
@@ -530,7 +554,19 @@ impl<'a> SigChat<'a> {
         if HOSTED_MODE {
             return true;
         }
+        // Renode-test gate 2: short-circuit the wifi check.
+        // The emulated EC's WF200 doesn't produce a real DHCP lease, so
+        // get_ipv4_config returns None and the modal would block forever.
+        // The host-side TAP gateway provides the actual route to the
+        // stand-in regardless of this in-process wifi state, so it's safe
+        // (under the renode-test feature only) to pretend wifi is up.
+        #[cfg(feature = "renode-test")]
+        {
+            log::warn!("renode-test gate 2: wifi() returning true unconditionally (no DHCP check)");
+            return true;
+        }
 
+        #[cfg(not(feature = "renode-test"))]
         if let Some(conf) = self.netmgr.get_ipv4_config() {
             if conf.dhcp == com_rs::DhcpState::Bound {
                 return true;
