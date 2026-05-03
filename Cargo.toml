@@ -120,6 +120,23 @@ hosted = [
 # harness in xous-signal-client-notes. See the harness setup
 # writeup at `_open-followups/2026-05-02-renode-signal-test-setup.md`.
 renode-test = []
+# Cross-key-contaminated PDDB pre-population for the
+# defensive-parsing regression test. Values match the
+# iter-A.2.2 attempt-1 hardware-observed contamination shape:
+#   device_id="f", is_multi_device="z7zWd", registered="gnal.",
+#   service_environment="fals", store_manifest_version="fa".
+# Account::read's unwrap_or_else paths default each on parse
+# failure and emit a log::warn! with the bad value — the
+# robot test watches for those log lines.
+#
+# Only meaningful when paired with renode-test (the build then
+# auto-connects + auto-picks-Link, exercising Account::new
+# which writes the contaminated values, then Account::read
+# which fires defensive parsing).
+#
+# DO NOT enable in default builds. Implies renode-test (and all
+# its INSECURE behaviors).
+renode-test-contaminated = ["renode-test"]
 
 [patch.crates-io]
 sha2 = { git = "https://github.com/betrusted-io/hashes.git", branch = "sha2-v0.10.8-xous" }

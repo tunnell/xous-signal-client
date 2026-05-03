@@ -128,23 +128,53 @@ impl Account {
         let _ = pddb.delete_key(pddb_dict, STORE_MANIFEST_KEY, None);
 
         // 7 Some-semantic fields: set_new (no delete_key, no sync).
-        set_new(&pddb, pddb_dict, DEVICE_ID_KEY, Some("0"))?;
-        set_new(&pddb, pddb_dict, HOST_KEY, Some(&host.to_string()))?;
-        set_new(
-            &pddb,
-            pddb_dict,
-            IS_MULTI_DEVICE_KEY,
-            Some(&false.to_string()),
-        )?;
-        set_new(&pddb, pddb_dict, REGISTERED_KEY, Some(&false.to_string()))?;
-        set_new(
-            &pddb,
-            pddb_dict,
-            SERVICE_ENVIRONMENT_KEY,
-            Some(&service_environment.to_string()),
-        )?;
-        set_new(&pddb, pddb_dict, STORE_LAST_RECEIVE_TIMESTAMP_KEY, Some("0"))?;
-        set_new(&pddb, pddb_dict, STORE_MANIFEST_VERSION_KEY, Some("-1"))?;
+        //
+        // Under the renode-test-contaminated feature, 5 of these are
+        // overwritten with values matching the iter-A.2.2 attempt-1
+        // hardware-observed cross-key-contamination shape, so the
+        // subsequent Account::read exercises the defensive parsing
+        // unwrap_or_else paths. Account::read fires log::warn for
+        // each parse failure and defaults the field. The robot test
+        // (sigchat-link.robot "Should Recover From Contaminated
+        // PDDB Account State") watches for those log lines.
+        // host stays valid (192.168.100.1 IS a parseable IP); the
+        // iter-A.2.2 attempt 1 contamination didn't hit the host
+        // field either, so this matches the observed shape.
+        #[cfg(feature = "renode-test-contaminated")]
+        {
+            log::warn!(
+                "renode-test-contaminated: writing iter-A.2.2-shaped \
+                 cross-key contamination to sigchat.account dict for \
+                 defensive-parsing regression test"
+            );
+            set_new(&pddb, pddb_dict, DEVICE_ID_KEY, Some("f"))?;
+            set_new(&pddb, pddb_dict, HOST_KEY, Some(&host.to_string()))?;
+            set_new(&pddb, pddb_dict, IS_MULTI_DEVICE_KEY, Some("z7zWd"))?;
+            set_new(&pddb, pddb_dict, REGISTERED_KEY, Some("gnal."))?;
+            set_new(&pddb, pddb_dict, SERVICE_ENVIRONMENT_KEY, Some("fals"))?;
+            set_new(&pddb, pddb_dict, STORE_LAST_RECEIVE_TIMESTAMP_KEY, Some("0"))?;
+            set_new(&pddb, pddb_dict, STORE_MANIFEST_VERSION_KEY, Some("fa"))?;
+        }
+        #[cfg(not(feature = "renode-test-contaminated"))]
+        {
+            set_new(&pddb, pddb_dict, DEVICE_ID_KEY, Some("0"))?;
+            set_new(&pddb, pddb_dict, HOST_KEY, Some(&host.to_string()))?;
+            set_new(
+                &pddb,
+                pddb_dict,
+                IS_MULTI_DEVICE_KEY,
+                Some(&false.to_string()),
+            )?;
+            set_new(&pddb, pddb_dict, REGISTERED_KEY, Some(&false.to_string()))?;
+            set_new(
+                &pddb,
+                pddb_dict,
+                SERVICE_ENVIRONMENT_KEY,
+                Some(&service_environment.to_string()),
+            )?;
+            set_new(&pddb, pddb_dict, STORE_LAST_RECEIVE_TIMESTAMP_KEY, Some("0"))?;
+            set_new(&pddb, pddb_dict, STORE_MANIFEST_VERSION_KEY, Some("-1"))?;
+        }
 
         // Single durability point for the pre-link batch.
         pddb.sync().map_err(|e| {
