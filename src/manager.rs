@@ -10,6 +10,8 @@ pub mod prekey_replenish;
 pub mod prekeys;
 pub mod rest;
 pub mod send;
+#[cfg(feature = "renode-test")]
+pub(crate) mod renode_test;
 mod signal_ws;
 pub mod stores;
 mod trust_mode;

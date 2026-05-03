@@ -26,6 +26,23 @@ pub const HOSTED_MODE: bool = true;
 pub const HOSTED_MODE: bool = false;
 
 fn signal_config() -> Config {
+    #[cfg(feature = "renode-test")]
+    {
+        // Renode emulation: redirect endpoint to TAP-host gateway IP.
+        // Pairs with the stand-in WS server in
+        // xous-signal-client-notes/renode-test/mock/signal_mock.py
+        // (default bind 192.168.100.1:443). Cert verification is also
+        // bypassed in src/manager/renode_test.rs — both the host
+        // override and the cert skip require this feature flag.
+        let host = Host::parse(crate::manager::renode_test::RENODE_TEST_HOST)
+            .expect("hardcoded renode-test IP is valid");
+        log::warn!(
+            "renode-test feature active: signal endpoint redirected to {}",
+            crate::manager::renode_test::RENODE_TEST_HOST
+        );
+        return Config::renode_test(host);
+    }
+    #[cfg(not(feature = "renode-test"))]
     Config::new(
         Host::parse("signal.org").expect("hardcoded host is valid"),
         ServiceEnvironment::Live,

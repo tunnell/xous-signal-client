@@ -104,8 +104,23 @@ fn wrapped_main() -> ! {
 
     // Auto-connect if the account is already registered (e.g. headless scan).
     // This fires the same logic as the first Event::Focus would have.
-    if sigchat.is_ready() {
+    //
+    // The `renode-test` feature also forces the auto-call. Renode robot
+    // tests can't reliably drive the launcher menu (the `'∴'` menu key
+    // requires a sequence that hasn't been validated), so without this
+    // gate sigchat would never reach Event::Focus and never call
+    // `connect()`. With renode-test, `connect()` fires at startup
+    // unconditionally, putting sigchat at the wifi modal / account_setup
+    // entry where the host-side stand-in can drive it.
+    let force_connect = cfg!(feature = "renode-test");
+    if sigchat.is_ready() || force_connect {
         first_focus = false;
+        if force_connect && !sigchat.is_ready() {
+            log::warn!(
+                "renode-test: forcing connect() at startup (account not yet registered; \
+                 bypassing the Event::Focus wait that the launcher menu would normally trigger)"
+            );
+        }
         match sigchat.connect() {
             Ok(true) => {
                 log::info!("connected to Signal Account");

@@ -35,6 +35,21 @@ impl Config {
     pub fn url(&self) -> &Url {
         &self.url
     }
+
+    /// Renode-emulation testing constructor. Builds a Config that points
+    /// at the raw IP of the TAP-host gateway (no `chat.` subdomain
+    /// prepend). Compiled only with the `renode-test` feature.
+    /// See `crate::manager::renode_test` for the security caveat.
+    #[cfg(feature = "renode-test")]
+    pub fn renode_test(host: Host) -> Self {
+        let url = Url::parse(&format!("https://{}/", host))
+            .expect("renode-test host produces a valid URL");
+        Self {
+            host,
+            service_environment: ServiceEnvironment::Live,
+            url,
+        }
+    }
 }
 
 #[cfg(test)]

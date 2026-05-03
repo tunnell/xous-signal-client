@@ -105,6 +105,21 @@ hosted = [
     "modals/hosted",
     "tls/hosted",
 ]
+# Renode emulation testing only. Redirects the Signal endpoint URL to
+# the host-side TAP gateway IP (192.168.100.1) and bypasses TLS cert
+# verification (self-signed cert from the renode-test stand-in).
+#
+# DO NOT enable in default builds. The cert-skip path (in
+# src/manager/renode_test.rs) hard-disables certificate validation —
+# any sigchat build with this feature set will accept any TLS server
+# without checking identity. Only intended for runs against the
+# host-side stand-in described in
+# `xous-signal-client-notes/renode-test/mock/signal_mock.py`.
+#
+# To use: pair with `precursor` or `hosted` plus the renode-test
+# harness in xous-signal-client-notes. See the harness setup
+# writeup at `_open-followups/2026-05-02-renode-signal-test-setup.md`.
+renode-test = []
 
 [patch.crates-io]
 sha2 = { git = "https://github.com/betrusted-io/hashes.git", branch = "sha2-v0.10.8-xous" }

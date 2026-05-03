@@ -135,8 +135,16 @@ impl SignalWS {
         let host = url.host_str().expect("failed to extract host from url");
         let sock = TcpStream::connect((host, 443))?;
         log::info!("tcp connected to {host}");
-        let xtls = Tls::new();
-        let tls_stream = xtls.stream_owned(host, sock)?;
+        #[cfg(feature = "renode-test")]
+        let tls_stream = {
+            log::warn!("renode-test feature active: TLS cert verification disabled");
+            crate::manager::renode_test::unverified_tls_stream(host, sock)?
+        };
+        #[cfg(not(feature = "renode-test"))]
+        let tls_stream = {
+            let xtls = Tls::new();
+            xtls.stream_owned(host, sock)?
+        };
         log::info!("tls configured");
         let request = build_ws_upgrade_request(url, auth)?;
         match tungstenite::client(request, tls_stream) {
