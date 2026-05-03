@@ -252,6 +252,56 @@ mod tests {
     }
 
     #[test]
+    fn flap_watcher_does_not_fire_on_unknown_to_connected_then_disconnect_fires() {
+        // iter-A.2.3 regression guard: WifiObserver::new dropped the
+        // com.wlan_sync_state() seed call (services/net/src/lib.rs:102-104
+        // documents COM congestion under direct calls). Initial state is
+        // now LinkState::Unknown until the first WifiStateCallback
+        // broadcast fires. The doc comment on WifiObserver::new claims
+        // "FlapWatcher's transition logic is safe under Unknown init"
+        // because the Connected→!Connected check rules out an
+        // Unknown→Connected first transition firing on_flap.
+        //
+        // This test makes that claim explicit and durable: starting
+        // Unknown, an Unknown→Connected broadcast must NOT fire on_flap;
+        // a subsequent Connected→Disconnected MUST; and a subsequent
+        // Disconnected→Connected must NOT.
+        let obs = WifiObserver::for_test();
+        // for_test() initializes link_state to Unknown via WifiState::unknown().
+        let count = Arc::new(AtomicUsize::new(0));
+        let count_for_cb = count.clone();
+        let _w = FlapWatcher::new(&obs, move || {
+            count_for_cb.fetch_add(1, Ordering::SeqCst);
+        });
+        // 1. Unknown → Connected: no flap (the iter-A.2.3 worry).
+        obs.inject_for_test(LinkState::Connected);
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            0,
+            "Unknown → Connected must not fire on_flap"
+        );
+        // 2. Connected → Disconnected: flap fires.
+        obs.inject_for_test(LinkState::Disconnected);
+        assert!(
+            wait_for(
+                || count.load(Ordering::SeqCst) == 1,
+                Duration::from_millis(200)
+            ),
+            "Connected → Disconnected must fire on_flap exactly once"
+        );
+        // 3. Disconnected → Connected: must NOT fire (back-to-good is
+        //    not a flap).
+        obs.inject_for_test(LinkState::Connected);
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "Disconnected → Connected must not fire on_flap (back-to-good is not a flap)"
+        );
+    }
+
+    #[test]
     fn flap_watcher_callback_form_invokes_arbitrary_closure() {
         let obs = WifiObserver::for_test();
         obs.inject_for_test(LinkState::Connected);
