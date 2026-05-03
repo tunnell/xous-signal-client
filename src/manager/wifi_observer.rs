@@ -102,17 +102,19 @@ impl WifiObserver {
     /// see `LinkState::Unknown` until the next change. The query is a
     /// scalar IPC (no buffer allocation), so cheap.
     pub fn new() -> io::Result<Self> {
-        let xns = xous_names::XousNames::new()
-            .map_err(|e| io::Error::other(format!("XousNames::new: {e:?}")))?;
-
-        // Seed initial state via a direct wlan_sync_state query. Best-
-        // effort: on hosted mode (no EC) or transient COM error, fall
-        // back to Unknown — the first broadcast will correct it.
-        let initial_link = com::Com::new(&xns)
-            .ok()
-            .and_then(|com| com.wlan_sync_state().ok())
-            .map(|(link, _dhcp)| link)
-            .unwrap_or(LinkState::Unknown);
+        // Initial state is Unknown; the first WifiStateCallback
+        // broadcast (fires within connection_manager's polling cadence)
+        // will provide the real value. We deliberately do NOT seed via
+        // a direct com.wlan_sync_state() call: net/src/lib.rs:102-104
+        // documents that the cached value via wifi_state_subscribe is
+        // the supported app-level path, and direct COM calls cause
+        // congestion. On hardware they can stall indefinitely when
+        // connection_manager's autonomous polling is mid-bus, hanging
+        // Manager::link before the QR modal — observed as the iter-A.2
+        // wedge before the fix. Unknown initial state is also safe with
+        // FlapWatcher: it fires only on Connected -> !Connected, so a
+        // first Unknown -> Connected broadcast is correctly a no-op.
+        let initial_link = LinkState::Unknown;
 
         let inner = Arc::new(Inner {
             state: RwLock::new(WifiState {
