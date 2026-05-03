@@ -221,13 +221,16 @@ impl Manager {
 
         log::info!("Registration message received from host");
         match libsignal::ProvisionMessage::decode(identity_key_pair, registration) {
-            Ok(provision_msg) => match self.account.link(name, provision_msg) {
-                Ok(result) => Ok(result),
-                Err(e) => {
-                    log::warn!("linking error: {e}");
-                    Ok(false)
+            Ok(provision_msg) => {
+                log::info!("iter-A.2.3 phase: post_envelope_decode");
+                match self.account.link(name, provision_msg) {
+                    Ok(result) => Ok(result),
+                    Err(e) => {
+                        log::warn!("linking error: {e}");
+                        Ok(false)
+                    }
                 }
-            },
+            }
             Err(e) => {
                 log::error!("failed to decrypt ProvisionMessage: {e}");
                 Err(link_err)

@@ -108,9 +108,7 @@ impl Account {
         // existing dict; no-op on fresh) + set_new for Some-semantic
         // fields (no per-call sync) + single durability sync at end.
         let init_start = std::time::Instant::now();
-        log::info!(
-            "Account::new: pre-link 20-key init starting (13 delete + 7 set_new + 1 sync)"
-        );
+        log::info!("iter-A.2.3 phase: pre_link_init_start");
 
         // 13 None-semantic fields: explicit delete_key clears stale
         // values on existing-dict path; no-op (NotFound, ignored) on
@@ -154,10 +152,9 @@ impl Account {
             Error::new(ErrorKind::Other, "PDDB sync failed after Account::new init")
         })?;
 
-        let elapsed = init_start.elapsed();
         log::info!(
-            "Account::new: pre-link 20-key init complete (elapsed_ms={})",
-            elapsed.as_millis()
+            "iter-A.2.3 phase: pre_link_init_complete keys=20 elapsed_ms={}",
+            init_start.elapsed().as_millis()
         );
 
         Account::read(pddb_dict)
@@ -224,10 +221,19 @@ impl Account {
                 aci_identity_private: aci_identity_private,
                 aci_identity_public: aci_identity_public,
                 aci_service_id: aci_service_id,
-                device_id: device_id.parse().unwrap(),
+                device_id: device_id.parse().unwrap_or_else(|e| {
+                    log::warn!("Account::read: device_id parse failed (got {:?}: {e}); defaulting to 0", device_id);
+                    0
+                }),
                 encrypted_device_name: encrypted_device_name,
-                host: Host::parse(&host).unwrap(),
-                is_multi_device: is_multi_device.parse().unwrap(),
+                host: Host::parse(&host).unwrap_or_else(|e| {
+                    log::warn!("Account::read: host parse failed (got {:?}: {e}); defaulting to signal.org", host);
+                    Host::parse("signal.org").expect("signal.org is a valid host literal")
+                }),
+                is_multi_device: is_multi_device.parse().unwrap_or_else(|e| {
+                    log::warn!("Account::read: is_multi_device parse failed (got {:?}: {e}); defaulting to false", is_multi_device);
+                    false
+                }),
                 number: number,
                 password: password,
                 pin_master_key: pin_master_key,
@@ -235,14 +241,23 @@ impl Account {
                 pni_identity_public: pni_identity_public,
                 pni_service_id: pni_service_id,
                 profile_key: profile_key,
-                registered: registered.parse().unwrap(),
-                service_environment: ServiceEnvironment::from_str(&service_environment).unwrap(),
+                registered: registered.parse().unwrap_or_else(|e| {
+                    log::warn!("Account::read: registered parse failed (got {:?}: {e}); defaulting to false", registered);
+                    false
+                }),
+                service_environment: ServiceEnvironment::from_str(&service_environment).unwrap_or_else(|_| {
+                    log::warn!("Account::read: service_environment parse failed (got {:?}, expected \"Live\" or \"Staging\"); defaulting to Live", service_environment);
+                    ServiceEnvironment::Live
+                }),
                 storage_key: storage_key,
                 store_last_receive_timestamp: store_last_receive_timestamp_opt
                     .as_deref()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(0),
-                store_manifest_version: store_manifest_version.parse().unwrap(),
+                store_manifest_version: store_manifest_version.parse().unwrap_or_else(|e| {
+                    log::warn!("Account::read: store_manifest_version parse failed (got {:?}: {e}); defaulting to -1", store_manifest_version);
+                    -1
+                }),
                 store_manifest: store_manifest,
             }),
             (Err(e), _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) => Err(e),
@@ -351,16 +366,28 @@ impl Account {
         log_identity_chain("aci", &aci_priv, &aci.djb_identity_key.key);
         log_identity_chain("pni", &pni_priv, &pni.djb_identity_key.key);
 
+        log::info!("iter-A.2.3 phase: prekey_gen_start");
+        let prekey_gen_start = std::time::Instant::now();
         let generated = prekeys::generate_prekeys(&aci_priv, &pni_priv)?;
+        log::info!(
+            "iter-A.2.3 phase: prekey_gen_complete elapsed_ms={}",
+            prekey_gen_start.elapsed().as_millis()
+        );
 
         // Clone attrs so the post-link refresh below has a copy after the
         // link body consumes its move-by-value (issue #16).
         let body = rest::LinkDeviceRequestBody::from_parts(
             verification_code, attrs.clone(), &generated);
 
+        log::info!("iter-A.2.3 phase: prekey_upload_start");
+        let upload_start = std::time::Instant::now();
         let base_url = self.chat_url()?;
         let response =
             rest::put_devices_link(&base_url, &provisioning_msg.number, &password, &body)?;
+        log::info!(
+            "iter-A.2.3 phase: prekey_upload_complete elapsed_ms={}",
+            upload_start.elapsed().as_millis()
+        );
         log::info!(
             "device linked: device_id={}, uuid={}, pni={}",
             response.device_id,
@@ -393,8 +420,8 @@ impl Account {
         // credentials set durable in one flush. See bug #2 in
         // `xous-signal-client-notes/_open-followups/2026-05-02-demo-arc-bugs.md`
         // for the discovery arc.
+        log::info!("iter-A.2.3 phase: post_link_persist_start");
         let persist_start = std::time::Instant::now();
-        log::info!("Account::link: post-link 18-key credentials persist starting");
         self.set_new(PASSWORD_KEY, Some(&password))?;
         self.set_new(DEVICE_ID_KEY, Some(&response.device_id.to_string()))?;
         self.set_new(ACI_IDENTITY_PRIVATE_KEY, Some(&aci.djb_private_key.key))?;
@@ -422,10 +449,9 @@ impl Account {
 
         self.set_new(REGISTERED_KEY, Some(&true.to_string()))?;
 
-        let writes_elapsed = persist_start.elapsed();
         log::info!(
-            "Account::link: 18 set_new writes complete (elapsed_ms={}); about to sync",
-            writes_elapsed.as_millis()
+            "iter-A.2.3 phase: post_link_persist_complete keys=18 elapsed_ms={}",
+            persist_start.elapsed().as_millis()
         );
 
         // Single durability point for the credentials batch. Runs
@@ -439,20 +465,19 @@ impl Account {
             Error::new(ErrorKind::Other, "PDDB sync failed after credentials persist")
         })?;
 
-        let sync_elapsed = persist_start.elapsed();
         log::info!(
-            "Account::link: post-link sync complete (total elapsed_ms={})",
-            sync_elapsed.as_millis()
+            "iter-A.2.3 phase: post_link_sync_complete total_elapsed_ms={}",
+            persist_start.elapsed().as_millis()
         );
 
         // Save prekey private-key records to pddb stores so incoming messages
         // can be decrypted. Must happen AFTER a successful REST link (above).
-        let prekey_start = std::time::Instant::now();
-        log::info!("Account::link: prekeys::save_to_pddb starting");
+        log::info!("iter-A.2.3 phase: prekey_save_start");
+        let prekey_save_start = std::time::Instant::now();
         prekeys::save_to_pddb(&generated)?;
         log::info!(
-            "Account::link: prekeys::save_to_pddb complete (elapsed_ms={})",
-            prekey_start.elapsed().as_millis()
+            "iter-A.2.3 phase: prekey_save_complete elapsed_ms={}",
+            prekey_save_start.elapsed().as_millis()
         );
 
         // Post-link account-attributes refresh (issue #16). The link body
@@ -467,19 +492,20 @@ impl Account {
         // a future startup. We log the outcome but do not propagate the
         // error.
         let attrs_identifier = format!("{}.{}", aci.service_id, response.device_id);
+        log::info!("iter-A.2.3 phase: attrs_refresh_start");
         let attrs_start = std::time::Instant::now();
-        log::info!("Account::link: account attributes refresh starting");
         match rest::put_accounts_attributes(&base_url, &attrs_identifier, &password, &attrs) {
             Ok(()) => log::info!(
-                "post-link account attributes refreshed (elapsed_ms={})",
+                "iter-A.2.3 phase: attrs_refresh_complete elapsed_ms={}",
                 attrs_start.elapsed().as_millis()
             ),
             Err(e) => log::warn!(
-                "post-link account attributes refresh failed (elapsed_ms={}, non-fatal): {e}",
+                "iter-A.2.3 phase: attrs_refresh_failed elapsed_ms={} non_fatal: {e}",
                 attrs_start.elapsed().as_millis()
             ),
         }
 
+        log::info!("iter-A.2.3 phase: link_complete");
         Ok(true)
     }
 
