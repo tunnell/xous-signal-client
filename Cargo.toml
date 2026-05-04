@@ -42,7 +42,7 @@ pddb = { path = "../xous-core/services/pddb" }
 chat = { path = "../xous-core/libs/chat" }
 modals = { path = "../xous-core/services/modals" }
 percent-encoding = "2.2"
-rkyv = { version = "0.8.8", default-features = false, features = ["std", "alloc"] }
+rkyv = { version = "0.8.8", default-features = false, features = ["std", "alloc", "bytecheck"] }
 serde = { version = "1.0", features = ["derive"] }
 tls = { path = "../xous-core/libs/tls" }
 tungstenite = "0.21.0"

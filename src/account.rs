@@ -1,3 +1,4 @@
+mod credentials;
 mod service_environment;
 
 use crate::manager::account_attrs;
