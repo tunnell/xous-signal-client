@@ -66,7 +66,7 @@ mkdir -p ~/xous-build && cd ~/xous-build
 
 git clone https://github.com/tunnell/xous-core.git
 cd xous-core
-git checkout dev
+git checkout dev   # no-op when the default branch is already `dev`; explicit guards against upstream default-branch changes
 cd ..
 
 git clone https://github.com/tunnell/xous-signal-client.git
@@ -134,6 +134,15 @@ would, but with an empty `EXPECTED_APP_CONTEXTS` array, and
 without requiring the riscv32 toolchain or any prebuilt
 sigchat ELF. Re-run only if `apps/manifest.json` changes.
 
+A subsequent `cargo xtask run sigchat:<bin>` (or
+`app-image`) regenerates these same files with the real
+apps you passed (e.g. `APP_NAME_SIGCHAT = "signal"` in
+`services/gam/src/apps.rs`). That's expected — the
+`dummy-template` step is purely a bootstrap so that the
+*hosted-library* build (`cargo build --features hosted` /
+`cargo test --features hosted`) succeeds before you've
+invoked any target that knows about your apps.
+
 ### Build and test
 
 ```bash
@@ -199,6 +208,16 @@ credentials (account number, ACI/PNI UUIDs, identity private
 keys, password, profile key). Treat as sensitive — do not paste
 into issues / chat / external systems; `shred -u` when
 finished.
+
+**If the run panics during startup with cascading `panicked
+at services/...` lines:** read the *first* panic — the rest
+is the kernel tearing down child services in the wrong order
+during cleanup, not independent failures. The most common
+root cause is a stale Xous instance (yours, or another
+user's on a shared host) holding a port the resolver wants
+to bind. See
+"Troubleshooting → `cargo xtask run` panics with
+`AddrInUse`".
 
 The Family-2 helper scripts (`tools/scan-send.sh`,
 `tools/scan-receive.sh`, `tools/demo-prep.sh`) wrap this same
@@ -419,6 +438,53 @@ should trigger the target install.
 Transient USB hiccup on the flash bridge. Retry the
 `usb_update.py` invocation. If repeated, hard power-cycle the
 Precursor and let it sit ~60-90s before retrying.
+
+### `cargo xtask run` panics during startup with `AddrInUse`
+
+Symptom: a fresh `cargo xtask run sigchat:<bin>` invocation
+panics in `services/dns/src/main.rs:323` with
+`couldn't create socket for DNS resolver: Os { code: 98,
+kind: AddrInUse, ... }`, followed by a cascade of `panicked
+at services/...` lines from `xous-names`,
+`early_settings`, `status`, etc. The *first* panic is the
+root cause; the rest is the kernel tearing down child
+services in the wrong order during cleanup.
+
+Root cause: the hosted-mode TRNG is the deterministic LFSR
+documented in the trng service ("hosted mode TRNG is *not*
+random, it is a deterministic LFSR"). The DNS service binds
+`0.0.0.0:(49152 + LFSR_word % 16384)`, so the *same* UDP
+port is picked on every cold start. If anything else holds
+that port — most commonly a previous xtask run of yours
+that didn't tear down cleanly after Ctrl-C, or another
+developer's process on a shared host — the bind fails and
+the whole startup unwinds.
+
+Fix:
+
+1. Kill leftover Xous processes from your prior runs:
+   ```bash
+   pkill -f "$PWD/xous-core/target/release/"      # kernel + services
+   pkill -f xous-signal-client                    # the sigchat ELF
+   ```
+   Verify with `pgrep -af xous-kernel` (should print
+   nothing). On a shared host, scope the patterns to your
+   own paths so you don't disturb other users.
+2. If your own cleanup doesn't help, the colliding port is
+   owned by someone else. List UDP listeners in the DNS
+   pick range and their owning UIDs:
+   ```bash
+   awk '{
+     port=strtonum("0x" substr($2, index($2, ":")+1))
+     if (port>=49152 && port<=65535) print port, "uid="$8
+   }' /proc/net/udp /proc/net/udp6 | sort -u
+   ```
+   Map UIDs with `getent passwd <uid>`. Because the LFSR
+   draw is deterministic, retrying on the same host won't
+   pick a different port — coordinate with the port owner
+   or run on a different host. (A non-deterministic seed
+   for the hosted TRNG would fix this class of conflict
+   permanently; tracked as follow-up.)
 
 ### Link wedges or device crashes during link flow
 
