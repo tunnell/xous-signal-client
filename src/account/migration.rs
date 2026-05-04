@@ -455,6 +455,89 @@ mod tests {
     }
 
     #[test]
+    fn case_sensitive_bool_parse_uppercase_defaults() {
+        // Rust's bool::from_str is case-sensitive. "TRUE" / "True"
+        // are unparseable and must default to false. This matches
+        // the legacy `Account::read` behavior post-#50.
+        let mut reader = MockReader::fully_linked();
+        reader.put(IS_MULTI_DEVICE_KEY, "TRUE");
+        let creds = migrate_from_legacy(&reader);
+        assert!(!creds.is_multi_device);
+
+        reader.put(IS_MULTI_DEVICE_KEY, "True");
+        let creds = migrate_from_legacy(&reader);
+        assert!(!creds.is_multi_device);
+    }
+
+    #[test]
+    fn whitespace_in_bool_value_defaults() {
+        let mut reader = MockReader::fully_linked();
+        reader.put(IS_MULTI_DEVICE_KEY, "true ");
+        let creds = migrate_from_legacy(&reader);
+        assert!(!creds.is_multi_device, "trailing whitespace should not parse as true");
+    }
+
+    #[test]
+    fn negative_device_id_string_defaults_to_zero() {
+        // device_id is u32; "-1" doesn't parse as u32.
+        let mut reader = MockReader::fully_linked();
+        reader.put(DEVICE_ID_KEY, "-1");
+        let creds = migrate_from_legacy(&reader);
+        assert_eq!(creds.device_id, 0);
+    }
+
+    #[test]
+    fn registration_id_above_u16_max_returns_none() {
+        // registration_id is Option<u16>; values > u16::MAX (65535)
+        // shouldn't ever appear in legacy data (Signal uses 14-bit IDs)
+        // but if they did, defensive parsing returns None rather than
+        // truncating.
+        let mut reader = MockReader::fully_linked();
+        reader.put(REGISTRATION_ID_KEY, "100000");
+        let creds = migrate_from_legacy(&reader);
+        assert_eq!(creds.registration_id, None);
+    }
+
+    #[test]
+    fn host_with_port_does_not_round_trip() {
+        // url::Host::parse on "signal.org:443" succeeds in some
+        // libraries but in url 2.x the Host::parse rejects port
+        // syntax. The migration filter requires
+        // round-trip-equality, so anything that doesn't survive
+        // parse + Display falls back to the default.
+        let mut reader = MockReader::fully_linked();
+        reader.put(HOST_KEY, "signal.org:443");
+        let creds = migrate_from_legacy(&reader);
+        assert_eq!(creds.host, "signal.org");
+    }
+
+    #[test]
+    fn ipv6_host_round_trips() {
+        // url::Host::parse normalizes IPv6 addresses to a bracketed
+        // canonical form. The migration filter accepts only values
+        // that round-trip identically, so an unbracketed IPv6 in
+        // legacy state would default. A bracketed IPv6 should be
+        // preserved.
+        let mut reader = MockReader::fully_linked();
+        reader.put(HOST_KEY, "[::1]");
+        let creds = migrate_from_legacy(&reader);
+        assert_eq!(creds.host, "[::1]");
+    }
+
+    #[test]
+    fn migrate_then_serialize_is_byte_stable() {
+        // Determinism: the migration result for a fixed reader,
+        // serialized twice, produces the same bytes.
+        let reader = MockReader::fully_linked();
+        let creds_a = migrate_from_legacy(&reader);
+        let creds_b = migrate_from_legacy(&reader);
+        assert_eq!(creds_a, creds_b);
+        let a = creds_a.serialize().unwrap();
+        let b = creds_b.serialize().unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
     fn legacy_keys_array_covers_every_account_field() {
         // Sanity: ensure every legacy const we defined is in the
         // LEGACY_KEYS array. If a future contributor adds a

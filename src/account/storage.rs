@@ -495,6 +495,48 @@ mod tests {
     }
 
     #[test]
+    fn persist_then_load_round_trips() {
+        // End-to-end: persist a populated AccountCredentials, then
+        // load via read_or_migrate. Should hit the blob path
+        // (not migrate). All fields preserved.
+        let store = MockStore::new();
+        let creds = populated_creds();
+        persist_credentials(&store, &creds).unwrap();
+        let (loaded, outcome) = read_or_migrate(&store).unwrap();
+        assert_eq!(outcome, LoadOutcome::LoadedFromBlob);
+        assert_eq!(loaded.unwrap(), creds);
+    }
+
+    #[test]
+    fn persist_overwrites_prior_blob() {
+        let store = MockStore::new();
+        let creds_v1 = populated_creds();
+        let mut creds_v2 = populated_creds();
+        creds_v2.device_id = 42;
+        persist_credentials(&store, &creds_v1).unwrap();
+        persist_credentials(&store, &creds_v2).unwrap();
+        let (loaded, _) = read_or_migrate(&store).unwrap();
+        assert_eq!(loaded.unwrap().device_id, 42);
+    }
+
+    #[test]
+    fn double_migration_run_is_safe() {
+        // Two consecutive read_or_migrate calls on the same store
+        // produce the same outcome the second time as the first
+        // would-have-produced subsequent calls (LoadedFromBlob).
+        // Re-runs are not destructive.
+        use crate::account::migration::DEVICE_ID_KEY;
+        let store = MockStore::new();
+        store.put_legacy(DEVICE_ID_KEY, "5");
+
+        let (creds_a, outcome_a) = read_or_migrate(&store).unwrap();
+        assert_eq!(outcome_a, LoadOutcome::MigratedFromLegacy);
+        let (creds_b, outcome_b) = read_or_migrate(&store).unwrap();
+        assert_eq!(outcome_b, LoadOutcome::LoadedFromBlob);
+        assert_eq!(creds_a, creds_b);
+    }
+
+    #[test]
     fn migration_creds_round_trip_via_blob() {
         use crate::account::migration::{
             ACCOUNT_ENTROPY_POOL_KEY, ACI_IDENTITY_PRIVATE_KEY, ACI_SERVICE_ID_KEY,

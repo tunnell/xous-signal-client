@@ -130,23 +130,9 @@ impl Account {
         }
         let creds = creds.ok_or_else(|| Error::from(ErrorKind::InvalidData))?;
 
-        let host = Host::parse(&creds.host).unwrap_or_else(|e| {
-            log::warn!(
-                "Account::read: host parse failed (got {:?}: {e}); defaulting to {}",
-                creds.host,
-                DEFAULT_HOST
-            );
-            Host::parse(DEFAULT_HOST).expect("DEFAULT_HOST is a valid host literal")
-        });
-
+        let host = parse_host_or_default(&creds.host);
         let service_environment =
-            ServiceEnvironment::from_str(&creds.service_environment).unwrap_or_else(|_| {
-                log::warn!(
-                    "Account::read: service_environment parse failed (got {:?}, expected \"Live\" or \"Staging\"); defaulting to Live",
-                    creds.service_environment
-                );
-                ServiceEnvironment::Live
-            });
+            parse_service_environment_or_default(&creds.service_environment);
 
         Ok(Account {
             pddb,
@@ -519,6 +505,33 @@ fn log_identity_chain(label: &str, private_key: &PrivateKey, expected_pub_b64url
     }
 }
 
+/// Parse `creds.host` (a string like `"signal.org"` or
+/// `"192.168.100.1"`) into a `url::Host`, defaulting to
+/// `DEFAULT_HOST` on parse failure. Mirrors the post-#50 defensive
+/// behavior of the prior tuple-match `Account::read`.
+fn parse_host_or_default(s: &str) -> Host {
+    Host::parse(s).unwrap_or_else(|e| {
+        log::warn!(
+            "host parse failed (got {:?}: {e}); defaulting to {}",
+            s,
+            DEFAULT_HOST
+        );
+        Host::parse(DEFAULT_HOST).expect("DEFAULT_HOST is a valid host literal")
+    })
+}
+
+/// Parse `creds.service_environment` ("Live" or "Staging") into the
+/// typed enum, defaulting to Live on unknown input.
+fn parse_service_environment_or_default(s: &str) -> ServiceEnvironment {
+    ServiceEnvironment::from_str(s).unwrap_or_else(|_| {
+        log::warn!(
+            "service_environment parse failed (got {:?}, expected \"Live\" or \"Staging\"); defaulting to Live",
+            s
+        );
+        ServiceEnvironment::Live
+    })
+}
+
 fn decode_private_key(key_b64url: &str, label: &str) -> Result<PrivateKey, Error> {
     let bytes = URL_SAFE_NO_PAD.decode(key_b64url).map_err(|e| {
         log::error!("{label} private key base64 decode: {e}");
@@ -528,4 +541,75 @@ fn decode_private_key(key_b64url: &str, label: &str) -> Result<PrivateKey, Error
         log::error!("{label} private key deserialize: {e:?}");
         Error::new(ErrorKind::InvalidData, "identity private key invalid")
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_host_signal_org() {
+        let h = parse_host_or_default("signal.org");
+        assert_eq!(h.to_string(), "signal.org");
+    }
+
+    #[test]
+    fn parse_host_ipv4() {
+        let h = parse_host_or_default("192.168.100.1");
+        assert_eq!(h.to_string(), "192.168.100.1");
+    }
+
+    #[test]
+    fn parse_host_garbage_defaults() {
+        let h = parse_host_or_default("not a valid host!@#$%");
+        assert_eq!(h.to_string(), DEFAULT_HOST);
+    }
+
+    #[test]
+    fn parse_host_empty_defaults() {
+        // url::Host::parse rejects empty strings.
+        let h = parse_host_or_default("");
+        assert_eq!(h.to_string(), DEFAULT_HOST);
+    }
+
+    #[test]
+    fn parse_host_default_constant_is_valid() {
+        // Sanity: DEFAULT_HOST must itself round-trip through
+        // Host::parse, otherwise parse_host_or_default would panic
+        // on the fallback path.
+        let h = Host::parse(DEFAULT_HOST).expect("DEFAULT_HOST must parse");
+        assert_eq!(h.to_string(), DEFAULT_HOST);
+    }
+
+    #[test]
+    fn parse_service_environment_live() {
+        assert!(matches!(
+            parse_service_environment_or_default("Live"),
+            ServiceEnvironment::Live
+        ));
+    }
+
+    #[test]
+    fn parse_service_environment_staging() {
+        assert!(matches!(
+            parse_service_environment_or_default("Staging"),
+            ServiceEnvironment::Staging
+        ));
+    }
+
+    #[test]
+    fn parse_service_environment_garbage_defaults_to_live() {
+        assert!(matches!(
+            parse_service_environment_or_default("Production"),
+            ServiceEnvironment::Live
+        ));
+        assert!(matches!(
+            parse_service_environment_or_default(""),
+            ServiceEnvironment::Live
+        ));
+        assert!(matches!(
+            parse_service_environment_or_default("LIVE"),
+            ServiceEnvironment::Live
+        ));
+    }
 }
