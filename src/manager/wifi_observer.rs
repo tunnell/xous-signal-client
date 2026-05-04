@@ -102,17 +102,17 @@ impl WifiObserver {
     /// see `LinkState::Unknown` until the next change. The query is a
     /// scalar IPC (no buffer allocation), so cheap.
     pub fn new() -> io::Result<Self> {
-        let xns = xous_names::XousNames::new()
-            .map_err(|e| io::Error::other(format!("XousNames::new: {e:?}")))?;
-
-        // Seed initial state via a direct wlan_sync_state query. Best-
-        // effort: on hosted mode (no EC) or transient COM error, fall
-        // back to Unknown — the first broadcast will correct it.
-        let initial_link = com::Com::new(&xns)
-            .ok()
-            .and_then(|com| com.wlan_sync_state().ok())
-            .map(|(link, _dhcp)| link)
-            .unwrap_or(LinkState::Unknown);
+        // iter-A.2.1 baseline working-tree edit (carried into
+        // iter-A.2.6): drop the direct wlan_sync_state seed call.
+        // xous-core net/src/lib.rs:102-104 documents that direct COM
+        // calls cause congestion and on hardware can stall indefinitely
+        // when connection_manager's autonomous polling is mid-bus —
+        // observed as the iter-A.2 WS-connect wedge before the fix.
+        // Initial state is Unknown; the first WifiStateCallback
+        // broadcast (within polling cadence) provides the real value.
+        // FlapWatcher fires only on Connected -> !Connected, so a first
+        // Unknown -> Connected broadcast is correctly a no-op.
+        let initial_link = LinkState::Unknown;
 
         let inner = Arc::new(Inner {
             state: RwLock::new(WifiState {
