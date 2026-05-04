@@ -10,7 +10,7 @@
 #   - riscv64-unknown-elf binutils (size, readelf) on PATH
 #   - cargo-bloat installed (cargo install cargo-bloat)
 #   - xous-core checkout at ../xous-core (or $XOUS_CORE_PATH) on
-#     branch dev-for-xous-signal-client
+#     branch dev (see BUILDING.md "Cloning the repos")
 #   - Python 3.11+ (or pip install tomli for older)
 #
 # Output:

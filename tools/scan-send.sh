@@ -20,7 +20,7 @@
 #   - X11 display (default :10) where the emulator window appears
 #   - python3 with X11 bindings (ctypes; usually present)
 #   - xous-core checkout at $XOUS_CORE_PATH (default ../xous-core) on
-#     branch dev-for-xous-signal-client
+#     branch dev (see BUILDING.md "Cloning the repos")
 #
 # Output:
 #   - Wire bytes to /tmp/xsc-wire-dump.txt (XSCDEBUG_DUMP=1)

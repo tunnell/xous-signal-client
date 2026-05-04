@@ -165,19 +165,49 @@ binary. Adding `--bin xous-signal-client` then errors with
 binary (see the comment above the gate for the underlying
 `gam::APP_NAME_SIGCHAT` problem).
 
-Hosted-mode interactive sigchat — including the in-app menu
-and link-flow QR display — is launched via xous-core's xtask
-runner: `cargo xtask run sigchat:<binary>` from
-`~/xous-build/xous-core`. The full procedure (PDDB snapshot
-restore, signal-cli priming, X11-driven UI navigation) lives
-in `tests/README.md` and `tools/scan-{send,receive}.sh`. End-
-to-end link itself requires a real Signal account, a phone
-running Signal, and `signal-cli` on the dev host — there is
-no in-tree mock of the Signal provisioning protocol.
+**The link flow itself is not exercised in hosted mode.**
+Selecting **Link** in the on-device menu, displaying the QR
+code, and scanning it from a phone is documented as a
+**Precursor (hardware) procedure** in the "Demo procedure"
+section below. There is no in-tree mock of the Signal
+provisioning protocol; an actual link requires a real Signal
+account, a phone running Signal, and `signal-cli` on the dev
+host. Hosted mode is the iteration path for the protocol /
+logic layers *after* a successful hardware link has produced
+the credentials snapshot.
+
+The Family-2 hosted-mode helper scripts (`tools/scan-send.sh`,
+`tools/scan-receive.sh`, `tools/demo-prep.sh`) drive sigchat
+via `cargo xtask run sigchat:<binary>` from xous-core. They
+have two prerequisites that a fresh clone does not produce:
+
+1. A pre-captured PDDB snapshot of an already-linked device,
+   expected at
+   `xous-core/tools/pddb-images/hosted-linked-display-verified.bin`.
+   That directory ships with only a `.keep` placeholder by
+   design — snapshots contain real Signal account credentials
+   and are user-generated from a successful Precursor link.
+   Configure the path via `XSC_PDDB_IMAGE` in `tools/.env`.
+2. A host-target sigchat ELF at
+   `target/release/xous-signal-client`. **This binary is not
+   buildable from a clean checkout today**: the `[[bin]]` in
+   `Cargo.toml` requires the `precursor` feature (which
+   targets `riscv32imac-unknown-xous-elf`), and the `hosted`
+   feature deliberately omits `gam/hosted` because forwarding
+   it triggers an infinite `register_ux` lend_mut loop in
+   hosted-mode gam (IPC format mismatch — see the comment
+   above the `[[bin]]` gate in `Cargo.toml`). Re-enabling a
+   buildable host-target binary is open work.
+
+The full Family-2 procedure (signal-cli priming, X11-driven
+UI navigation, leg-1/leg-2 wire and parse verification) is
+documented in `tests/README.md`.
 
 For agents/contributors validating that a fresh clone builds
-and the test suite passes, the bootstrap + build + test
-sequence above is sufficient.
+and the test suite passes, **the bootstrap + build + test
+sequence above is the documented stopping point**. Anything
+beyond it (interactive sigchat, link flow, send/receive E2E)
+needs hardware, real Signal accounts, or both.
 
 ## Renode mode
 

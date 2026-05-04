@@ -14,7 +14,7 @@
 # Prerequisites:
 #   - Renode v1.16.1 or later on PATH
 #   - xous-core checkout at $XOUS_CORE_PATH (default ../xous-core) on
-#     branch dev-for-xous-signal-client
+#     branch dev (see BUILDING.md "Cloning the repos")
 #   - xous-signal-client release binary already built for the Xous
 #     target (run measure-size.sh first if needed)
 #

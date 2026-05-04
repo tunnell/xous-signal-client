@@ -35,7 +35,7 @@
 #   - X11 display (default :10) where the emulator window appears
 #   - python3 (ctypes; usually present)
 #   - xous-core checkout at $XOUS_CORE_PATH on
-#     dev-for-xous-signal-client
+#     dev (see BUILDING.md "Cloning the repos")
 #
 # Output:
 #   - Emulator scan log to /tmp/xsc-recv-<timestamp>.log
