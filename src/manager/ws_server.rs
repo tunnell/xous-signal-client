@@ -26,10 +26,13 @@ use xous_ipc::Buffer;
 use crate::manager::signal_ws::SignalWS;
 
 /// Max size of a single ProvisionEnvelope frame accepted from the server.
-/// 64 KiB is 16 pages — Signal's typical envelope is ~4KB; this gives 16x
-/// headroom for protocol evolution. Larger frames are rejected with an
-/// explicit error and the received size is logged for diagnostics.
-pub(crate) const WS_PROVISION_MAX: usize = 64 * 1024;
+/// 8 KiB is 2 pages — Signal's typical envelope is ~669 bytes; this gives
+/// 12× headroom while keeping the kernel multi-page IPC `map_memory` cost
+/// to 2 pages instead of 17 (the 64 KiB original triggered silent reboots
+/// inside `wait_and_take_binary`'s page mapping). Larger frames are
+/// rejected with an explicit error and the received size is logged for
+/// diagnostics.
+pub(crate) const WS_PROVISION_MAX: usize = 8 * 1024;
 
 /// Application-layer keepalive cadence. Signal's documented server-side idle
 /// timeout is ~60s; 25s leaves room for two Pings before the server drops us.
