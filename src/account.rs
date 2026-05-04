@@ -1,30 +1,39 @@
 mod credentials;
+mod migration;
 mod service_environment;
+mod storage;
 
 use crate::manager::account_attrs;
 use crate::manager::libsignal::{DeviceNameUtil, IdentityKey, ProvisionMessage, SignalServiceAddress};
 use crate::manager::prekeys;
 use crate::manager::rest;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use credentials::{AccountCredentials, CREDENTIALS_VERSION};
 use libsignal_protocol::PrivateKey;
 use pddb::Pddb;
 pub use service_environment::ServiceEnvironment;
-use std::io::{Error, ErrorKind, Read, Write};
+use std::io::{Error, ErrorKind};
 use std::str::FromStr;
+use storage::{persist_credentials, read_or_migrate, LoadOutcome, PddbCredentialsStore};
 use url::{Host, Url};
 
-/// The Account struct is architected as a cache over a pddb dictionary.
+/// The Account struct is architected as a cache over a single rkyv-
+/// serialized credentials blob in the PDDB dict named in `pddb_dict`.
+/// The blob lives at the key `credentials::CREDENTIALS_KEY` and holds
+/// the full set of persisted account state.
 ///
-/// * Creating a new Account inherently involves writing to pddb
-/// * Each field has a 1:1 relationship with a pddb.key.
-/// * Field values are able to be set individually
+/// Replaces the prior 18-key burst-write shape that empirically still
+/// triggered a hardware-only first-attempt link crash on Precursor
+/// (issue #51) even after the `set_new + batch sync` mitigation
+/// (issue #47). The new shape: 1 PDDB allocation + 1 write + 1 sync
+/// per persistence operation. See
+/// `xous-signal-client-notes/_open-followups/active/blob-credentials/`
+/// for the design.
 ///
-/// Steps to ensure consistency:
-/// * the default values in a new Account are first written to pddb, and then read back into the struct.
-/// * all fields must be successfully read from pddb or read fails with Error
-/// * setting a value requires a successful writes to pddb before updating the field
-///
-
+/// The struct mirrors the persisted fields in memory (subset — three
+/// write-only fields — `account_entropy_pool`, `registration_id`,
+/// `pni_registration_id` — live only on disk, in the blob, and are
+/// populated at link time but never read back into memory).
 #[allow(dead_code)]
 pub struct Account {
     pddb: Pddb,
@@ -53,45 +62,21 @@ pub struct Account {
 
 pub const DEFAULT_HOST: &str = "signal.org";
 
-const ACCOUNT_ENTROPY_POOL_KEY: &str = "aep";
-const ACI_IDENTITY_PRIVATE_KEY: &str = "aci.identity.private";
-const ACI_IDENTITY_PUBLIC_KEY: &str = "aci.identity.public";
-const ACI_SERVICE_ID_KEY: &str = "aci.service_id";
-const DEVICE_ID_KEY: &str = "device_id";
-const ENCRYPTED_DEVICE_NAME_KEY: &str = "encrypted_device_name";
-const HOST_KEY: &str = "host";
-const IS_MULTI_DEVICE_KEY: &str = "is_multi_device";
-const NUMBER_KEY: &str = "number";
-const PASSWORD_KEY: &str = "password";
-const PIN_MASTER_KEY_KEY: &str = "pin_master_key";
-const PNI_IDENTITY_PRIVATE_KEY: &str = "pni.identity.private";
-const PNI_IDENTITY_PUBLIC_KEY: &str = "pni.identity.public";
-const PNI_REGISTRATION_ID_KEY: &str = "pni.registration_id";
-const PNI_SERVICE_ID_KEY: &str = "pni.service_id";
-const PROFILE_KEY_KEY: &str = "profile_key";
-const REGISTERED_KEY: &str = "registered";
-const REGISTRATION_ID_KEY: &str = "registration_id";
-const SERVICE_ENVIRONMENT_KEY: &str = "service_environment";
-const STORAGE_KEY_KEY: &str = "storage_key";
-const STORE_LAST_RECEIVE_TIMESTAMP_KEY: &str = "store_last_receive_timestamp";
-const STORE_MANIFEST_VERSION_KEY: &str = "store_manifest_version";
-const STORE_MANIFEST_KEY: &str = "store_manifest";
-
 impl Account {
-    /// Create a new Account stored in pddb with default values
+    /// Create a new Account stored in pddb with default values.
     ///
-    /// This function saves default values for each field in the pddb
-    /// and then calls read() to load the values into the Account struct
+    /// Writes a fresh `AccountCredentials` blob (defaults overlaid
+    /// with the supplied `host` and `service_environment`) to the
+    /// dict, syncs, and reads it back into the in-memory `Account`.
     ///
     /// # Arguments
-    /// * `pddb_dict` - pddb dictionary name to hold the Account
-    /// * `host` - Signal host server (immutable)
-    /// * `service_environment` - Signal service-environment (immutable)
+    /// * `pddb_dict` — pddb dictionary name to hold the Account.
+    /// * `host` — Signal host server (immutable for this account).
+    /// * `service_environment` — Signal service environment
+    ///   (immutable for this account).
     ///
     /// # Returns
-    ///
-    /// a new Account with default values
-    ///
+    /// A new `Account` with default values.
     pub fn new(
         pddb_dict: &str,
         host: &Host,
@@ -100,190 +85,99 @@ impl Account {
         let pddb = pddb::Pddb::new();
         pddb.try_mount();
 
-        // Pre-link 20-key account-defaults init. Apply bug #2 fix's
-        // set_new + batch-sync pattern here too — see chore "Fresh-dict
-        // vs existing-dict matters on Precursor PDDB" §. The original
-        // 20× `set` (delete_key + get + write + sync per call)
-        // wedges under FastSpace pressure on fresh dict. Replace with
-        // explicit delete_key for None-semantic fields (clears stale on
-        // existing dict; no-op on fresh) + set_new for Some-semantic
-        // fields (no per-call sync) + single durability sync at end.
+        let creds = AccountCredentials {
+            version: CREDENTIALS_VERSION,
+            host: host.to_string(),
+            service_environment: service_environment.to_string(),
+            ..AccountCredentials::default()
+        };
 
-        // 13 None-semantic fields: explicit delete_key clears stale
-        // values on existing-dict path; no-op (NotFound, ignored) on
-        // fresh dict.
-        let _ = pddb.delete_key(pddb_dict, ACI_IDENTITY_PRIVATE_KEY, None);
-        let _ = pddb.delete_key(pddb_dict, ACI_IDENTITY_PUBLIC_KEY, None);
-        let _ = pddb.delete_key(pddb_dict, ACI_SERVICE_ID_KEY, None);
-        let _ = pddb.delete_key(pddb_dict, ENCRYPTED_DEVICE_NAME_KEY, None);
-        let _ = pddb.delete_key(pddb_dict, NUMBER_KEY, None);
-        let _ = pddb.delete_key(pddb_dict, PASSWORD_KEY, None);
-        let _ = pddb.delete_key(pddb_dict, PIN_MASTER_KEY_KEY, None);
-        let _ = pddb.delete_key(pddb_dict, PNI_IDENTITY_PRIVATE_KEY, None);
-        let _ = pddb.delete_key(pddb_dict, PNI_IDENTITY_PUBLIC_KEY, None);
-        let _ = pddb.delete_key(pddb_dict, PNI_SERVICE_ID_KEY, None);
-        let _ = pddb.delete_key(pddb_dict, PROFILE_KEY_KEY, None);
-        let _ = pddb.delete_key(pddb_dict, STORAGE_KEY_KEY, None);
-        let _ = pddb.delete_key(pddb_dict, STORE_MANIFEST_KEY, None);
-
-        // 7 Some-semantic fields: set_new (no delete_key, no sync).
-        set_new(&pddb, pddb_dict, DEVICE_ID_KEY, Some("0"))?;
-        set_new(&pddb, pddb_dict, HOST_KEY, Some(&host.to_string()))?;
-        set_new(
-            &pddb,
-            pddb_dict,
-            IS_MULTI_DEVICE_KEY,
-            Some(&false.to_string()),
-        )?;
-        set_new(&pddb, pddb_dict, REGISTERED_KEY, Some(&false.to_string()))?;
-        set_new(
-            &pddb,
-            pddb_dict,
-            SERVICE_ENVIRONMENT_KEY,
-            Some(&service_environment.to_string()),
-        )?;
-        set_new(&pddb, pddb_dict, STORE_LAST_RECEIVE_TIMESTAMP_KEY, Some("0"))?;
-        set_new(&pddb, pddb_dict, STORE_MANIFEST_VERSION_KEY, Some("-1"))?;
-
-        // Single durability point for the pre-link batch.
-        pddb.sync().map_err(|e| {
-            log::warn!("Account::new: pre-link sync failed: {e:?}");
-            Error::new(ErrorKind::Other, "PDDB sync failed after Account::new init")
+        let store = PddbCredentialsStore { pddb: &pddb, dict: pddb_dict };
+        persist_credentials(&store, &creds).map_err(|e| {
+            log::warn!("Account::new: persist failed: {e:?}");
+            Error::new(ErrorKind::Other, "PDDB write failed in Account::new")
         })?;
 
         Account::read(pddb_dict)
     }
 
-    // retrieves an existing Account from the pddb
-    //
-    // # Arguments
-    // * `pddb_dict` - the pddb dictionary name holding the Account
-    //
-    // # Returns
-    //
-    // a Account with values read from pddb_dict
-    //
+    /// Retrieve an existing Account from the pddb.
+    ///
+    /// Reads the `AccountCredentials` blob and copies its fields
+    /// into the in-memory `Account`. If the blob is absent but
+    /// legacy per-key data is present (one-time migration from the
+    /// pre-blob shape), `read_or_migrate` migrates it transparently.
+    ///
+    /// # Arguments
+    /// * `pddb_dict` — the pddb dictionary name holding the Account.
+    ///
+    /// # Returns
+    /// An `Account` populated from the persisted state, or
+    /// `Err(InvalidData)` if no state exists yet (caller treats as
+    /// "no account; offer link/register").
     pub fn read(pddb_dict: &str) -> Result<Account, Error> {
         let pddb = pddb::Pddb::new();
         pddb.try_mount();
-        match (
-            get(&pddb, pddb_dict, ACI_IDENTITY_PRIVATE_KEY),
-            get(&pddb, pddb_dict, ACI_IDENTITY_PUBLIC_KEY),
-            get(&pddb, pddb_dict, ACI_SERVICE_ID_KEY),
-            get(&pddb, pddb_dict, DEVICE_ID_KEY),
-            get(&pddb, pddb_dict, ENCRYPTED_DEVICE_NAME_KEY),
-            get(&pddb, pddb_dict, HOST_KEY),
-            get(&pddb, pddb_dict, IS_MULTI_DEVICE_KEY),
-            get(&pddb, pddb_dict, NUMBER_KEY),
-            get(&pddb, pddb_dict, PASSWORD_KEY),
-            get(&pddb, pddb_dict, PIN_MASTER_KEY_KEY),
-            get(&pddb, pddb_dict, PNI_IDENTITY_PRIVATE_KEY),
-            get(&pddb, pddb_dict, PNI_IDENTITY_PUBLIC_KEY),
-            get(&pddb, pddb_dict, PNI_SERVICE_ID_KEY),
-            get(&pddb, pddb_dict, PROFILE_KEY_KEY),
-            get(&pddb, pddb_dict, REGISTERED_KEY),
-            get(&pddb, pddb_dict, SERVICE_ENVIRONMENT_KEY),
-            get(&pddb, pddb_dict, STORAGE_KEY_KEY),
-            get(&pddb, pddb_dict, STORE_LAST_RECEIVE_TIMESTAMP_KEY),
-            get(&pddb, pddb_dict, STORE_MANIFEST_VERSION_KEY),
-            get(&pddb, pddb_dict, STORE_MANIFEST_KEY),
-        ) {
-            (
-                Ok(aci_identity_private),
-                Ok(aci_identity_public),
-                Ok(aci_service_id),
-                Ok(Some(device_id)),
-                Ok(encrypted_device_name),
-                Ok(Some(host)),
-                Ok(Some(is_multi_device)),
-                Ok(number),
-                Ok(password),
-                Ok(pin_master_key),
-                Ok(pni_identity_private),
-                Ok(pni_identity_public),
-                Ok(pni_service_id),
-                Ok(profile_key),
-                Ok(Some(registered)),
-                Ok(Some(service_environment)),
-                Ok(storage_key),
-                Ok(store_last_receive_timestamp_opt),
-                Ok(Some(store_manifest_version)),
-                Ok(store_manifest),
-            ) => Ok(Account {
-                pddb: pddb,
-                pddb_dict: pddb_dict.to_string(),
-                aci_identity_private: aci_identity_private,
-                aci_identity_public: aci_identity_public,
-                aci_service_id: aci_service_id,
-                device_id: device_id.parse().unwrap_or_else(|e| {
-                    log::warn!("Account::read: device_id parse failed (got {:?}: {e}); defaulting to 0", device_id);
-                    0
-                }),
-                encrypted_device_name: encrypted_device_name,
-                host: Host::parse(&host).unwrap_or_else(|e| {
-                    log::warn!("Account::read: host parse failed (got {:?}: {e}); defaulting to signal.org", host);
-                    Host::parse("signal.org").expect("signal.org is a valid host literal")
-                }),
-                is_multi_device: is_multi_device.parse().unwrap_or_else(|e| {
-                    log::warn!("Account::read: is_multi_device parse failed (got {:?}: {e}); defaulting to false", is_multi_device);
-                    false
-                }),
-                number: number,
-                password: password,
-                pin_master_key: pin_master_key,
-                pni_identity_private: pni_identity_private,
-                pni_identity_public: pni_identity_public,
-                pni_service_id: pni_service_id,
-                profile_key: profile_key,
-                registered: registered.parse().unwrap_or_else(|e| {
-                    log::warn!("Account::read: registered parse failed (got {:?}: {e}); defaulting to false", registered);
-                    false
-                }),
-                service_environment: ServiceEnvironment::from_str(&service_environment).unwrap_or_else(|_| {
-                    log::warn!("Account::read: service_environment parse failed (got {:?}, expected \"Live\" or \"Staging\"); defaulting to Live", service_environment);
-                    ServiceEnvironment::Live
-                }),
-                storage_key: storage_key,
-                store_last_receive_timestamp: store_last_receive_timestamp_opt
-                    .as_deref()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(0),
-                store_manifest_version: store_manifest_version.parse().unwrap_or_else(|e| {
-                    log::warn!("Account::read: store_manifest_version parse failed (got {:?}: {e}); defaulting to -1", store_manifest_version);
-                    -1
-                }),
-                store_manifest: store_manifest,
-            }),
-            (Err(e), _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) => Err(e),
-            (_, Err(e), _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) => Err(e),
-            (_, _, Err(e), _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) => Err(e),
-            (_, _, _, Err(e), _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) => Err(e),
-            (_, _, _, _, Err(e), _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) => Err(e),
-            (_, _, _, _, _, Err(e), _, _, _, _, _, _, _, _, _, _, _, _, _, _) => Err(e),
-            (_, _, _, _, _, _, Err(e), _, _, _, _, _, _, _, _, _, _, _, _, _) => Err(e),
-            (_, _, _, _, _, _, _, Err(e), _, _, _, _, _, _, _, _, _, _, _, _) => Err(e),
-            (_, _, _, _, _, _, _, _, Err(e), _, _, _, _, _, _, _, _, _, _, _) => Err(e),
-            (_, _, _, _, _, _, _, _, _, Err(e), _, _, _, _, _, _, _, _, _, _) => Err(e),
-            (_, _, _, _, _, _, _, _, _, _, Err(e), _, _, _, _, _, _, _, _, _) => Err(e),
-            (_, _, _, _, _, _, _, _, _, _, _, Err(e), _, _, _, _, _, _, _, _) => Err(e),
-            (_, _, _, _, _, _, _, _, _, _, _, _, Err(e), _, _, _, _, _, _, _) => Err(e),
-            (_, _, _, _, _, _, _, _, _, _, _, _, _, Err(e), _, _, _, _, _, _) => Err(e),
-            (_, _, _, _, _, _, _, _, _, _, _, _, _, _, Err(e), _, _, _, _, _) => Err(e),
-            (_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, Err(e), _, _, _, _) => Err(e),
-            (_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, Err(e), _, _, _) => Err(e),
-            (_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, Err(e), _, _) => Err(e),
-            (_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, Err(e), _) => Err(e),
-            (_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, Err(e)) => Err(e),
-            (_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) => {
-                Err(Error::from(ErrorKind::InvalidData))
+
+        let store = PddbCredentialsStore { pddb: &pddb, dict: pddb_dict };
+        let (creds, outcome) = read_or_migrate(&store)?;
+        match outcome {
+            LoadOutcome::LoadedFromBlob => log::trace!("credentials loaded from blob"),
+            LoadOutcome::MigratedFromLegacy => {
+                log::info!("credentials migrated from legacy per-key shape to blob")
             }
+            LoadOutcome::Fresh => log::info!("no credentials persisted yet (fresh state)"),
         }
+        let creds = creds.ok_or_else(|| Error::from(ErrorKind::InvalidData))?;
+
+        let host = Host::parse(&creds.host).unwrap_or_else(|e| {
+            log::warn!(
+                "Account::read: host parse failed (got {:?}: {e}); defaulting to {}",
+                creds.host,
+                DEFAULT_HOST
+            );
+            Host::parse(DEFAULT_HOST).expect("DEFAULT_HOST is a valid host literal")
+        });
+
+        let service_environment =
+            ServiceEnvironment::from_str(&creds.service_environment).unwrap_or_else(|_| {
+                log::warn!(
+                    "Account::read: service_environment parse failed (got {:?}, expected \"Live\" or \"Staging\"); defaulting to Live",
+                    creds.service_environment
+                );
+                ServiceEnvironment::Live
+            });
+
+        Ok(Account {
+            pddb,
+            pddb_dict: pddb_dict.to_string(),
+            aci_identity_private: creds.aci_identity_private,
+            aci_identity_public: creds.aci_identity_public,
+            aci_service_id: creds.aci_service_id,
+            device_id: creds.device_id,
+            encrypted_device_name: creds.encrypted_device_name,
+            host,
+            is_multi_device: creds.is_multi_device,
+            number: creds.number,
+            password: creds.password,
+            pin_master_key: creds.pin_master_key,
+            pni_identity_private: creds.pni_identity_private,
+            pni_identity_public: creds.pni_identity_public,
+            pni_service_id: creds.pni_service_id,
+            profile_key: creds.profile_key,
+            registered: creds.registered,
+            service_environment,
+            storage_key: creds.storage_key,
+            store_last_receive_timestamp: creds.store_last_receive_timestamp,
+            store_manifest_version: creds.store_manifest_version,
+            store_manifest: creds.store_manifest,
+        })
     }
 
-    /// Delete this Account key/value from the pddb
+    /// Delete this Account key/value from the pddb.
     ///
-    /// While this Account struct will persist in memory, a subsequent Account.read() will fail
-    ///
+    /// While this Account struct will persist in memory, a subsequent
+    /// `Account::read()` will fail.
     pub fn delete(pddb_dict: &str) -> Result<(), Error> {
         let pddb = pddb::Pddb::new();
         pddb.try_mount();
@@ -292,20 +186,18 @@ impl Account {
         Ok(())
     }
 
-    /// link to an existing Signal Account as a secondary device
+    /// Link to an existing Signal Account as a secondary device.
     ///
-    /// Confirm that the state of the Signal Account is OK before linking
-    /// https://github.com/AsamK/signal-cli/blob/375bdb79485ec90beb9a154112821a4657740b7a/lib/src/main/java/org/asamk/signal/manager/internal/ProvisioningManagerImpl.java#L200-L239
+    /// Confirm that the state of the Signal Account is OK before
+    /// linking.
+    /// <https://github.com/AsamK/signal-cli/blob/375bdb79485ec90beb9a154112821a4657740b7a/lib/src/main/java/org/asamk/signal/manager/internal/ProvisioningManagerImpl.java#L200-L239>
     ///
     /// # Arguments
-    ///
-    /// * `device_name` - name to describe this new device
-    /// * `provisioning_msg` - obtained from the Signal server
+    /// * `device_name` — name to describe this new device.
+    /// * `provisioning_msg` — obtained from the Signal server.
     ///
     /// # Returns
-    ///
-    /// true on success
-    ///
+    /// `true` on success.
     pub fn link(
         &mut self,
         device_name: &str,
@@ -352,18 +244,18 @@ impl Account {
         let aci_priv = decode_private_key(&aci.djb_private_key.key, "aci")?;
         let pni_priv = decode_private_key(&pni.djb_private_key.key, "pni")?;
 
-        // Diagnostic: check that the public key we derive from each private
-        // matches the public sent in the ProvisionMessage. If these diverge,
-        // the identity key chain is broken and our signatures will never
-        // verify against the server's stored identity key (422 from
-        // PreKeySignatureValidator).
+        // Diagnostic: check that the public key we derive from each
+        // private matches the public sent in the ProvisionMessage. If
+        // these diverge, the identity key chain is broken and our
+        // signatures will never verify against the server's stored
+        // identity key (422 from PreKeySignatureValidator).
         log_identity_chain("aci", &aci_priv, &aci.djb_identity_key.key);
         log_identity_chain("pni", &pni_priv, &pni.djb_identity_key.key);
 
         let generated = prekeys::generate_prekeys(&aci_priv, &pni_priv)?;
 
-        // Clone attrs so the post-link refresh below has a copy after the
-        // link body consumes its move-by-value (issue #16).
+        // Clone attrs so the post-link refresh below has a copy after
+        // the link body consumes its move-by-value (issue #16).
         let body = rest::LinkDeviceRequestBody::from_parts(
             verification_code, attrs.clone(), &generated);
 
@@ -391,70 +283,89 @@ impl Account {
             );
         }
 
-        // Persist all post-link account credentials. We use `set_new`
-        // (not `set`) because every key here is being written for the
-        // first time on this account: either the dict was empty before
-        // link, or the user cleaned it before re-linking. `set_new`
-        // skips the per-call `delete_key` and per-call `sync()`,
-        // halving the PDDB IPC count and removing the cumulative
-        // watchdog pressure that caused mid-link silent reboots.
-        // A single `pddb.sync()` after this batch makes the whole
-        // credentials set durable in one flush. See bug #2 in
-        // `xous-signal-client-notes/_open-followups/2026-05-02-demo-arc-bugs.md`
-        // for the discovery arc.
-        self.set_new(PASSWORD_KEY, Some(&password))?;
-        self.set_new(DEVICE_ID_KEY, Some(&response.device_id.to_string()))?;
-        self.set_new(ACI_IDENTITY_PRIVATE_KEY, Some(&aci.djb_private_key.key))?;
-        self.set_new(ACI_IDENTITY_PUBLIC_KEY, Some(&aci.djb_identity_key.key))?;
-        self.set_new(ACI_SERVICE_ID_KEY, Some(&aci.service_id))?;
-        self.set_new(PNI_IDENTITY_PRIVATE_KEY, Some(&pni.djb_private_key.key))?;
-        self.set_new(PNI_IDENTITY_PUBLIC_KEY, Some(&pni.djb_identity_key.key))?;
-        self.set_new(PNI_SERVICE_ID_KEY, Some(&pni.service_id))?;
-        self.set_new(ENCRYPTED_DEVICE_NAME_KEY, Some(&encrypted_name))?;
-        self.set_new(IS_MULTI_DEVICE_KEY, Some(&true.to_string()))?;
-        self.set_new(NUMBER_KEY, Some(&provisioning_msg.number))?;
-        self.set_new(PROFILE_KEY_KEY, Some(profile_key_b64))?;
-        if let Some(aep) = provisioning_msg.account_entropy_pool.as_deref() {
-            self.set_new(ACCOUNT_ENTROPY_POOL_KEY, Some(aep))?;
-        }
-        self.set_new(REGISTRATION_ID_KEY, Some(&registration_id.to_string()))?;
-        self.set_new(
-            PNI_REGISTRATION_ID_KEY,
-            Some(&pni_registration_id.to_string()),
-        )?;
-        self.set_new(STORAGE_KEY_KEY, None)?;
-        self.set_new(STORE_LAST_RECEIVE_TIMESTAMP_KEY, Some("0"))?;
-        self.set_new(STORE_MANIFEST_VERSION_KEY, Some("-1"))?;
-        self.set_new(STORE_MANIFEST_KEY, None)?;
+        // Mutate the in-memory cache. The subsequent `persist_credentials`
+        // serializes the post-link state to disk in a single PDDB
+        // allocation + write + sync — replaces the prior 18-key burst
+        // that empirically still triggered hardware first-attempt
+        // crashes (issue #51) under FastSpace pressure even after the
+        // set_new + batch sync mitigation (#47).
+        self.password = Some(password.clone());
+        self.device_id = response.device_id;
+        self.aci_identity_private = Some(aci.djb_private_key.key.clone());
+        self.aci_identity_public = Some(aci.djb_identity_key.key.clone());
+        self.aci_service_id = Some(aci.service_id.clone());
+        self.pni_identity_private = Some(pni.djb_private_key.key.clone());
+        self.pni_identity_public = Some(pni.djb_identity_key.key.clone());
+        self.pni_service_id = Some(pni.service_id.clone());
+        self.encrypted_device_name = Some(encrypted_name.clone());
+        self.is_multi_device = true;
+        self.number = Some(provisioning_msg.number.clone());
+        self.profile_key = Some(profile_key_b64.clone());
+        self.storage_key = None;
+        self.store_last_receive_timestamp = 0;
+        self.store_manifest_version = -1;
+        self.store_manifest = None;
+        self.registered = true;
 
-        self.set_new(REGISTERED_KEY, Some(&true.to_string()))?;
+        // Build the post-link credentials snapshot. Note: three fields
+        // — `account_entropy_pool`, `registration_id`,
+        // `pni_registration_id` — are persisted in the blob but not
+        // tracked as in-memory `Account` fields (today they're
+        // write-only; the link path is the only writer and no read
+        // path consumes them). We pass them through directly into
+        // the snapshot so they reach disk.
+        let creds = AccountCredentials {
+            version: CREDENTIALS_VERSION,
+            aci_identity_private: self.aci_identity_private.clone(),
+            aci_identity_public: self.aci_identity_public.clone(),
+            aci_service_id: self.aci_service_id.clone(),
+            pni_identity_private: self.pni_identity_private.clone(),
+            pni_identity_public: self.pni_identity_public.clone(),
+            pni_service_id: self.pni_service_id.clone(),
+            encrypted_device_name: self.encrypted_device_name.clone(),
+            number: self.number.clone(),
+            password: self.password.clone(),
+            pin_master_key: self.pin_master_key.clone(),
+            profile_key: self.profile_key.clone(),
+            account_entropy_pool: provisioning_msg
+                .account_entropy_pool
+                .as_deref()
+                .map(str::to_string),
+            storage_key: self.storage_key.clone(),
+            store_manifest: self.store_manifest.clone(),
+            device_id: self.device_id,
+            registration_id: Some(registration_id),
+            pni_registration_id: Some(pni_registration_id),
+            is_multi_device: self.is_multi_device,
+            registered: self.registered,
+            store_last_receive_timestamp: self.store_last_receive_timestamp,
+            store_manifest_version: self.store_manifest_version,
+            service_environment: self.service_environment.to_string(),
+            host: self.host.to_string(),
+        };
 
-        // Single durability point for the credentials batch. Runs
-        // before any subsequent network call (the post-link
-        // `PUT /v1/accounts/attributes` below) so that if a power
-        // loss happens between this sync and the network call, the
-        // local state is at least consistent with what the server
-        // already committed in `PUT /v1/devices/link` above.
-        self.pddb.sync().map_err(|e| {
-            log::warn!("post-link credentials sync failed: {e:?}");
-            Error::new(ErrorKind::Other, "PDDB sync failed after credentials persist")
+        let store = PddbCredentialsStore { pddb: &self.pddb, dict: &self.pddb_dict };
+        persist_credentials(&store, &creds).map_err(|e| {
+            log::warn!("post-link credentials persist failed: {e:?}");
+            Error::new(ErrorKind::Other, "PDDB write failed after credentials persist")
         })?;
 
-        // Save prekey private-key records to pddb stores so incoming messages
-        // can be decrypted. Must happen AFTER a successful REST link (above).
+        // Save prekey private-key records to pddb stores so incoming
+        // messages can be decrypted. Must happen AFTER a successful
+        // REST link (above).
         prekeys::save_to_pddb(&generated)?;
 
-        // Post-link account-attributes refresh (issue #16). The link body
-        // already carries an accountAttributes sub-object on the device
-        // record; this PUT updates the canonical per-account record so the
-        // server's per-device and per-account views agree. Reference
-        // clients (signal-cli, libsignal-service-rs, Signal-Android) all
-        // issue this in addition to the link.
+        // Post-link account-attributes refresh (issue #16). The link
+        // body already carries an accountAttributes sub-object on the
+        // device record; this PUT updates the canonical per-account
+        // record so the server's per-device and per-account views
+        // agree. Reference clients (signal-cli, libsignal-service-rs,
+        // Signal-Android) all issue this in addition to the link.
         //
-        // Non-fatal: the link succeeded above, the message receive path
-        // works, and the server-side per-account record can be retried on
-        // a future startup. We log the outcome but do not propagate the
-        // error.
+        // Non-fatal: the link succeeded above, the message receive
+        // path works, and the server-side per-account record can be
+        // retried on a future startup. We log the outcome but do not
+        // propagate the error.
         let attrs_identifier = format!("{}.{}", aci.service_id, response.device_id);
         match rest::put_accounts_attributes(&base_url, &attrs_identifier, &password, &attrs) {
             Ok(()) => log::info!("post-link account attributes refreshed"),
@@ -482,9 +393,10 @@ impl Account {
         &self.host
     }
 
-    /// Returns the hostname of Signal's messaging/auth service for this account,
-    /// derived from the stored base host and service environment — matches the
-    /// host used by `chat_url()` for REST calls.
+    /// Returns the hostname of Signal's messaging/auth service for
+    /// this account, derived from the stored base host and service
+    /// environment — matches the host used by `chat_url()` for REST
+    /// calls.
     pub fn chat_host(&self) -> String {
         let host_s = self.host.to_string();
         match self.service_environment {
@@ -494,17 +406,19 @@ impl Account {
     }
 
     pub fn is_primary_device(&self) -> bool {
-        // Require registered as well: a fresh (unregistered) account with
-        // device_id==0 is not a primary device; it is a pre-link placeholder.
-        // Without this guard a stuck/corrupt state could misclassify itself
-        // as primary once device_id happens to equal DEFAULT_DEVICE_ID.
+        // Require registered as well: a fresh (unregistered) account
+        // with device_id==0 is not a primary device; it is a pre-link
+        // placeholder. Without this guard a stuck/corrupt state could
+        // misclassify itself as primary once device_id happens to
+        // equal DEFAULT_DEVICE_ID.
         self.is_registered() && self.device_id == SignalServiceAddress::DEFAULT_DEVICE_ID
     }
 
     pub fn is_registered(&self) -> bool {
-        // Also treat a partially-linked account as registered: if device_id != 0,
-        // aci_service_id and password are present, the link REST call succeeded and
-        // all keys are usable — the registered flag just wasn't written yet.
+        // Also treat a partially-linked account as registered: if
+        // device_id != 0, aci_service_id and password are present, the
+        // link REST call succeeded and all keys are usable — the
+        // registered flag just wasn't written yet.
         self.registered
             || (self.device_id != 0
                 && self.aci_service_id.is_some()
@@ -513,10 +427,7 @@ impl Account {
 
     #[allow(dead_code)]
     pub fn number(&self) -> Option<&str> {
-        match &self.number {
-            Some(num) => Some(&num),
-            None => None,
-        }
+        self.number.as_deref()
     }
 
     pub fn aci_service_id(&self) -> Option<&str> {
@@ -535,137 +446,57 @@ impl Account {
         &self.service_environment
     }
 
+    /// Update the account's phone number on disk and in memory.
+    ///
+    /// Re-serializes the entire credentials blob (full-write
+    /// semantics). Acceptable cost — `set_number` is rare (currently
+    /// only the dead-code-flagged `account_register` path calls it),
+    /// and the blob is small (~1.5 KiB → one PDDB page).
     #[allow(dead_code)]
     pub fn set_number(&mut self, value: &str) -> Result<(), Error> {
-        match self.set(NUMBER_KEY, Some(value)) {
-            Ok(_) => self.number = Some(value.to_string()),
-            Err(e) => log::warn!("failed to set signal account number: {e}"),
-        }
-        Ok(())
+        self.number = Some(value.to_string());
+        let creds = self.snapshot_credentials();
+        let store = PddbCredentialsStore { pddb: &self.pddb, dict: &self.pddb_dict };
+        persist_credentials(&store, &creds)
     }
 
-    #[allow(dead_code)]
-    fn get(&self, key: &str) -> Result<Option<String>, Error> {
-        get(&self.pddb, &self.pddb_dict, key)
-    }
-
-    // Sets the value of a pddb_key / field in the Account
-    //
-    // To guarantee consistency, the value is saved to the pddb and,
-    // on success, set to the corresponding field in the Account struct.
-    //
-    // # Arguments
-    // * `key` - the pddb_key corresponding to the Account field
-    // * `value` - the value to save into the Account field (and pddb)
-    //
-    // # Returns
-    //
-    // Ok()
-    //
-    fn set(&mut self, key: &str, value: Option<&str>) -> Result<(), Error> {
-        let owned_value = value.map(str::to_string);
-        match set(&self.pddb, &self.pddb_dict, key, value) {
-            Ok(()) => match key {
-                ACI_IDENTITY_PRIVATE_KEY => Ok(self.aci_identity_private = owned_value),
-                ACI_IDENTITY_PUBLIC_KEY => Ok(self.aci_identity_public = owned_value),
-                ACI_SERVICE_ID_KEY => Ok(self.aci_service_id = owned_value),
-                DEVICE_ID_KEY => Ok(self.device_id = owned_value.unwrap().parse().unwrap()),
-                ENCRYPTED_DEVICE_NAME_KEY => Ok(self.encrypted_device_name = owned_value),
-                IS_MULTI_DEVICE_KEY => {
-                    Ok(self.is_multi_device = owned_value.unwrap().parse().unwrap())
-                }
-                NUMBER_KEY => Ok(self.number = owned_value),
-                PASSWORD_KEY => Ok(self.password = owned_value),
-                PIN_MASTER_KEY_KEY => Ok(self.pin_master_key = owned_value),
-                PNI_IDENTITY_PRIVATE_KEY => Ok(self.pni_identity_private = owned_value),
-                PNI_IDENTITY_PUBLIC_KEY => Ok(self.pni_identity_public = owned_value),
-                PNI_SERVICE_ID_KEY => Ok(self.pni_service_id = owned_value),
-                PROFILE_KEY_KEY => Ok(self.profile_key = owned_value),
-                REGISTERED_KEY => Ok(self.registered = owned_value.unwrap().parse().unwrap()),
-                SERVICE_ENVIRONMENT_KEY => Ok(self.service_environment =
-                    ServiceEnvironment::from_str(&value.unwrap()).unwrap()),
-                STORAGE_KEY_KEY => Ok(self.storage_key = owned_value),
-                ACCOUNT_ENTROPY_POOL_KEY
-                | REGISTRATION_ID_KEY
-                | PNI_REGISTRATION_ID_KEY
-                | STORE_LAST_RECEIVE_TIMESTAMP_KEY
-                | STORE_MANIFEST_VERSION_KEY
-                | STORE_MANIFEST_KEY => Ok(()),
-                _ => {
-                    log::warn!("invalid key: {key}");
-                    let _ = &self.pddb.delete_key(&self.pddb_dict, &key, None);
-                    Err(Error::from(ErrorKind::NotFound))
-                }
-            },
-            Err(e) => Err(e),
-        }
-    }
-
-    /// Persist a *freshly-created* PDDB key/value pair and mirror it
-    /// into the in-memory `Account` field.
+    /// Build an `AccountCredentials` from the in-memory cache.
     ///
-    /// **Precondition (caller's responsibility):** the key must not
-    /// already exist in `self.pddb_dict`. Unlike [`set`], this method
-    /// omits the `delete_key` prelude and the per-call `pddb.sync()`,
-    /// so:
-    ///
-    /// - If the key already has a longer prior value, the new value
-    ///   is **merged into the head of the old value** rather than
-    ///   replacing it (PDDB writes are position-based, not
-    ///   truncating). This is a correctness bug in any caller that
-    ///   uses `set_new` on a possibly-existing key.
-    /// - The PDDB write is **not durable** until the caller invokes
-    ///   `self.pddb.sync()`. A power loss between this call and the
-    ///   caller's eventual `sync()` loses the value.
-    ///
-    /// `set_new` exists specifically for `Manager::link()`'s
-    /// post-link credentials persistence, where ~18 keys are written
-    /// in tight succession into a fresh-or-just-cleaned dict. The
-    /// per-call `sync()` in `set` was the cause of bug #2 (cumulative
-    /// PDDB IPC pressure → watchdog reset). Batching all 18 writes
-    /// behind a single `sync()` and skipping the redundant
-    /// `delete_key` cuts IPC count roughly 3×. Discovery arc:
-    /// `xous-signal-client-notes/_open-followups/2026-05-02-demo-arc-bugs.md`
-    /// (bug #2) and `2026-05-02-jtag-recv_slice-debug.md` (iter-1..iter-3).
-    ///
-    /// Do **not** use this helper outside the link path, and do not
-    /// reuse it for update-or-create semantics — call `set` instead.
-    fn set_new(&mut self, key: &str, value: Option<&str>) -> Result<(), Error> {
-        let owned_value = value.map(str::to_string);
-        match set_new(&self.pddb, &self.pddb_dict, key, value) {
-            Ok(()) => match key {
-                ACI_IDENTITY_PRIVATE_KEY => Ok(self.aci_identity_private = owned_value),
-                ACI_IDENTITY_PUBLIC_KEY => Ok(self.aci_identity_public = owned_value),
-                ACI_SERVICE_ID_KEY => Ok(self.aci_service_id = owned_value),
-                DEVICE_ID_KEY => Ok(self.device_id = owned_value.unwrap().parse().unwrap()),
-                ENCRYPTED_DEVICE_NAME_KEY => Ok(self.encrypted_device_name = owned_value),
-                IS_MULTI_DEVICE_KEY => {
-                    Ok(self.is_multi_device = owned_value.unwrap().parse().unwrap())
-                }
-                NUMBER_KEY => Ok(self.number = owned_value),
-                PASSWORD_KEY => Ok(self.password = owned_value),
-                PIN_MASTER_KEY_KEY => Ok(self.pin_master_key = owned_value),
-                PNI_IDENTITY_PRIVATE_KEY => Ok(self.pni_identity_private = owned_value),
-                PNI_IDENTITY_PUBLIC_KEY => Ok(self.pni_identity_public = owned_value),
-                PNI_SERVICE_ID_KEY => Ok(self.pni_service_id = owned_value),
-                PROFILE_KEY_KEY => Ok(self.profile_key = owned_value),
-                REGISTERED_KEY => Ok(self.registered = owned_value.unwrap().parse().unwrap()),
-                SERVICE_ENVIRONMENT_KEY => Ok(self.service_environment =
-                    ServiceEnvironment::from_str(&value.unwrap()).unwrap()),
-                STORAGE_KEY_KEY => Ok(self.storage_key = owned_value),
-                ACCOUNT_ENTROPY_POOL_KEY
-                | REGISTRATION_ID_KEY
-                | PNI_REGISTRATION_ID_KEY
-                | STORE_LAST_RECEIVE_TIMESTAMP_KEY
-                | STORE_MANIFEST_VERSION_KEY
-                | STORE_MANIFEST_KEY => Ok(()),
-                _ => {
-                    log::warn!("invalid key: {key}");
-                    let _ = &self.pddb.delete_key(&self.pddb_dict, &key, None);
-                    Err(Error::from(ErrorKind::NotFound))
-                }
-            },
-            Err(e) => Err(e),
+    /// Used by `set_number` (and any future post-link mutation
+    /// path) before persistence. Three fields not tracked in
+    /// `Account` (`account_entropy_pool`, `registration_id`,
+    /// `pni_registration_id`) round-trip through the blob via
+    /// `Account::read` → blob → `set_number`-driven re-write → blob
+    /// is **lossy by design**: this snapshot zeroes them out.
+    /// Today no live code path mutates them post-link, so this is a
+    /// safe simplification; if a future feature needs them, lift
+    /// them into `Account` fields.
+    fn snapshot_credentials(&self) -> AccountCredentials {
+        AccountCredentials {
+            version: CREDENTIALS_VERSION,
+            aci_identity_private: self.aci_identity_private.clone(),
+            aci_identity_public: self.aci_identity_public.clone(),
+            aci_service_id: self.aci_service_id.clone(),
+            pni_identity_private: self.pni_identity_private.clone(),
+            pni_identity_public: self.pni_identity_public.clone(),
+            pni_service_id: self.pni_service_id.clone(),
+            encrypted_device_name: self.encrypted_device_name.clone(),
+            number: self.number.clone(),
+            password: self.password.clone(),
+            pin_master_key: self.pin_master_key.clone(),
+            profile_key: self.profile_key.clone(),
+            account_entropy_pool: None,
+            storage_key: self.storage_key.clone(),
+            store_manifest: self.store_manifest.clone(),
+            device_id: self.device_id,
+            registration_id: None,
+            pni_registration_id: None,
+            is_multi_device: self.is_multi_device,
+            registered: self.registered,
+            store_last_receive_timestamp: self.store_last_receive_timestamp,
+            store_manifest_version: self.store_manifest_version,
+            service_environment: self.service_environment.to_string(),
+            host: self.host.to_string(),
         }
     }
 }
@@ -697,63 +528,4 @@ fn decode_private_key(key_b64url: &str, label: &str) -> Result<PrivateKey, Error
         log::error!("{label} private key deserialize: {e:?}");
         Error::new(ErrorKind::InvalidData, "identity private key invalid")
     })
-}
-
-fn get(pddb: &Pddb, dict: &str, key: &str) -> Result<Option<String>, Error> {
-    let value = match pddb.get(dict, key, None, true, false, None, None::<fn()>) {
-        Ok(mut pddb_key) => {
-            let mut buffer = [0; 256];
-            match pddb_key.read(&mut buffer) {
-                Ok(len) => match String::from_utf8(buffer[..len].to_vec()) {
-                    Ok(s) => Some(s),
-                    Err(e) => {
-                        log::warn!("failed to String: {:?}", e);
-                        None
-                    }
-                },
-                Err(e) => {
-                    log::warn!("failed pddb_key read: {:?}", e);
-                    None
-                }
-            }
-        }
-        Err(_) => None,
-    };
-    log::info!("get '{}' = '{:?}'", key, value);
-    Ok(value)
-}
-
-fn set(pddb: &Pddb, dict: &str, key: &str, value: Option<&str>) -> Result<(), Error> {
-    log::info!("set '{}' = '{:?}'", key, value);
-    // delete key first to ensure data in a prior longer key is gone
-    pddb.delete_key(dict, key, None).ok();
-    if let Some(value) = value {
-        match pddb.get(dict, key, None, true, true, None, None::<fn()>) {
-            Ok(mut pddb_key) => match pddb_key.write(&value.as_bytes()) {
-                Ok(len) => {
-                    pddb.sync().ok();
-                    log::trace!("Wrote {} bytes to {}:{}", len, dict, key);
-                }
-                Err(e) => {
-                    log::warn!("Error writing {}:{} {:?}", dict, key, e);
-                }
-            },
-            Err(e) => log::warn!("failed to set pddb {}:{}  {:?}", dict, key, e),
-        };
-    }
-    Ok(())
-}
-
-/// Lower-level fresh-key write. See [`Account::set_new`] for the
-/// precondition contract: this skips the `delete_key` prelude and
-/// the per-call `pddb.sync()` that [`set`] does, so the caller
-/// must guarantee the key does not already exist and must invoke
-/// `pddb.sync()` once after the batch to make the writes durable.
-fn set_new(pddb: &Pddb, dict: &str, key: &str, value: Option<&str>) -> Result<(), Error> {
-    log::info!("set_new '{}' = '{:?}'", key, value);
-    if let Some(value) = value {
-        let mut pddb_key = pddb.get(dict, key, None, true, true, None, None::<fn()>)?;
-        pddb_key.write(value.as_bytes())?;
-    }
-    Ok(())
 }

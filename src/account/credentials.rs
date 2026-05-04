@@ -53,8 +53,10 @@ pub struct AccountCredentials {
 
     // -- Numeric / boolean -------------------------------------------
     pub device_id: u32,
-    pub registration_id: Option<u32>,
-    pub pni_registration_id: Option<u32>,
+    /// Signal registration IDs are 14-bit per the protocol; stored as
+    /// `u16` to match `account_attrs::generate_registration_id`.
+    pub registration_id: Option<u16>,
+    pub pni_registration_id: Option<u16>,
     pub is_multi_device: bool,
     pub registered: bool,
     pub store_last_receive_timestamp: i64,
@@ -298,15 +300,15 @@ mod tests {
     fn boundary_numerics_round_trip() {
         let mut creds = AccountCredentials::default();
         creds.device_id = u32::MAX;
-        creds.registration_id = Some(u32::MAX);
-        creds.pni_registration_id = Some(u32::MAX);
+        creds.registration_id = Some(u16::MAX);
+        creds.pni_registration_id = Some(u16::MAX);
         creds.store_last_receive_timestamp = i64::MAX;
         creds.store_manifest_version = i64::MIN;
         let bytes = creds.serialize().expect("serialize");
         let back = AccountCredentials::deserialize(&bytes).expect("deserialize");
         assert_eq!(back.device_id, u32::MAX);
-        assert_eq!(back.registration_id, Some(u32::MAX));
-        assert_eq!(back.pni_registration_id, Some(u32::MAX));
+        assert_eq!(back.registration_id, Some(u16::MAX));
+        assert_eq!(back.pni_registration_id, Some(u16::MAX));
         assert_eq!(back.store_last_receive_timestamp, i64::MAX);
         assert_eq!(back.store_manifest_version, i64::MIN);
     }
