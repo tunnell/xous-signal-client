@@ -214,10 +214,19 @@ impl Account {
                 aci_identity_private: aci_identity_private,
                 aci_identity_public: aci_identity_public,
                 aci_service_id: aci_service_id,
-                device_id: device_id.parse().unwrap(),
+                device_id: device_id.parse().unwrap_or_else(|e| {
+                    log::warn!("Account::read: device_id parse failed (got {:?}: {e}); defaulting to 0", device_id);
+                    0
+                }),
                 encrypted_device_name: encrypted_device_name,
-                host: Host::parse(&host).unwrap(),
-                is_multi_device: is_multi_device.parse().unwrap(),
+                host: Host::parse(&host).unwrap_or_else(|e| {
+                    log::warn!("Account::read: host parse failed (got {:?}: {e}); defaulting to signal.org", host);
+                    Host::parse("signal.org").expect("signal.org is a valid host literal")
+                }),
+                is_multi_device: is_multi_device.parse().unwrap_or_else(|e| {
+                    log::warn!("Account::read: is_multi_device parse failed (got {:?}: {e}); defaulting to false", is_multi_device);
+                    false
+                }),
                 number: number,
                 password: password,
                 pin_master_key: pin_master_key,
@@ -225,14 +234,23 @@ impl Account {
                 pni_identity_public: pni_identity_public,
                 pni_service_id: pni_service_id,
                 profile_key: profile_key,
-                registered: registered.parse().unwrap(),
-                service_environment: ServiceEnvironment::from_str(&service_environment).unwrap(),
+                registered: registered.parse().unwrap_or_else(|e| {
+                    log::warn!("Account::read: registered parse failed (got {:?}: {e}); defaulting to false", registered);
+                    false
+                }),
+                service_environment: ServiceEnvironment::from_str(&service_environment).unwrap_or_else(|_| {
+                    log::warn!("Account::read: service_environment parse failed (got {:?}, expected \"Live\" or \"Staging\"); defaulting to Live", service_environment);
+                    ServiceEnvironment::Live
+                }),
                 storage_key: storage_key,
                 store_last_receive_timestamp: store_last_receive_timestamp_opt
                     .as_deref()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(0),
-                store_manifest_version: store_manifest_version.parse().unwrap(),
+                store_manifest_version: store_manifest_version.parse().unwrap_or_else(|e| {
+                    log::warn!("Account::read: store_manifest_version parse failed (got {:?}: {e}); defaulting to -1", store_manifest_version);
+                    -1
+                }),
                 store_manifest: store_manifest,
             }),
             (Err(e), _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) => Err(e),
