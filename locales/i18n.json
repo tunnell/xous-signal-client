@@ -35,11 +35,11 @@
         "zh": "Please provide a name for this device *EN*"
     },
     "sigchat.account.link.scan": {
-        "en": "1. Open Signal on your phone\n2. Tap into settings, then tap `Linked Devices`\n3. Tap ⊕ or `Link New Device` and scan",
-        "en-tts": "1. Open Signal on your phone\n2. Tap into settings, then tap `Linked Devices`\n3. Tap ⊕ or `Link New Device` and scan",
-        "fr": "1. Open Signal on your phone\n2. Tap into settings, then tap `Linked Devices`\n3. Tap ⊕ or `Link New Device` and scan *EN*",
-        "ja": "1. Open Signal on your phone\n2. Tap into settings, then tap `Linked Devices`\n3. Tap ⊕ or `Link New Device` and scan *EN*",
-        "zh": "1. Open Signal on your phone\n2. Tap into settings, then tap `Linked Devices`\n3. Tap ⊕ or `Link New Device` and scan *EN*"
+        "en": "1. Open Signal on your phone\n2. Tap into settings, then tap `Linked Devices`\n3. Tap ⊕ or `Link New Device` and scan\n4. Press any key here after scanning",
+        "en-tts": "1. Open Signal on your phone\n2. Tap into settings, then tap `Linked Devices`\n3. Tap ⊕ or `Link New Device` and scan\n4. Press any key here after scanning",
+        "fr": "1. Open Signal on your phone\n2. Tap into settings, then tap `Linked Devices`\n3. Tap ⊕ or `Link New Device` and scan\n4. Press any key here after scanning *EN*",
+        "ja": "1. Open Signal on your phone\n2. Tap into settings, then tap `Linked Devices`\n3. Tap ⊕ or `Link New Device` and scan\n4. Press any key here after scanning *EN*",
+        "zh": "1. Open Signal on your phone\n2. Tap into settings, then tap `Linked Devices`\n3. Tap ⊕ or `Link New Device` and scan\n4. Press any key here after scanning *EN*"
     },
     "sigchat.account.offline": {
         "en": "Read Signal offline",
