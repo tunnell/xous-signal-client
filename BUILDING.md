@@ -1,0 +1,360 @@
+# Building xous-signal-client
+
+This document covers three build targets: hosted (development on a
+Linux/macOS host), Renode (CPU emulator), and Precursor hardware.
+Tested commands match what was actually run during the
+2026-05-04 demo; sections marked **(unverified)** were not run
+end-to-end during testing and reflect upstream documentation.
+
+## Prerequisites
+
+### Common (all targets)
+
+- A Linux or macOS development host. Tested on `x86_64-unknown-linux-gnu`.
+- [`rustup`](https://rustup.rs/) with the stable Rust toolchain.
+  ```bash
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+  source "$HOME/.cargo/env"
+  ```
+- `git`.
+
+### Hosted target only
+
+No additional prerequisites. The hosted build uses the host's
+default toolchain (e.g. `x86_64-unknown-linux-gnu`).
+
+### Precursor / Renode target
+
+- The `riscv32imac-unknown-xous-elf` rustc target. This is the
+  Xous-aware target installed by xous-core's build system the
+  first time you run `cargo xtask`. No manual `rustup target add`
+  is required for this target.
+
+- For GDB attach against a Precursor running with `--gdb-stub`:
+  the [xPack RISC-V Embedded GCC](https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases)
+  toolchain (provides `riscv-none-elf-gdb`).
+
+### Hardware (Precursor) only
+
+- A Precursor device.
+- A USB cable from the Precursor to the host running the flash
+  command. The current setup uses a Raspberry Pi as a flash
+  bridge between laptop and Precursor; the Pi has the Precursor
+  attached via USB, and the laptop drives the flash from over
+  SSH.
+- For initial bring-up of a Precursor: see upstream's
+  [betrusted-scripts](https://github.com/betrusted-io/betrusted-scripts)
+  for provisioning, factory-reset, and bootloader steps. This
+  document assumes a Precursor with bootloader + initialized
+  PDDB + WiFi credentials already configured.
+
+## Cloning the repos
+
+The build references two repositories:
+
+- `tunnell/xous-signal-client` (this repo): the sigchat
+  application source. Branch: **`main`**.
+- `tunnell/xous-core` `dev` branch: the Xous OS source plus the
+  xtask build harness. Branch: **`dev`**. (Not `main`, not
+  `dev-for-xous-signal-client`.)
+
+```bash
+mkdir -p ~/xous-build && cd ~/xous-build
+
+git clone https://github.com/tunnell/xous-core.git
+cd xous-core
+git checkout dev
+cd ..
+
+git clone https://github.com/tunnell/xous-signal-client.git
+cd xous-signal-client
+# main is the default branch
+cd ..
+```
+
+The two clones must be siblings on disk
+(`~/xous-build/xous-core/` and `~/xous-build/xous-signal-client/`)
+because xous-core's `cargo xtask app-image` invocation references
+sigchat by relative path.
+
+If `git clone` fails on a slow or unstable network with errors
+like `GnuTLS recv error` or `early EOF`, retry with a shallow
+clone:
+```bash
+git clone --depth 50 --single-branch --branch dev \
+    https://github.com/tunnell/xous-core.git
+git clone --depth 50 --single-branch --branch main \
+    https://github.com/tunnell/xous-signal-client.git
+```
+
+## Hosted mode
+
+The hosted target builds sigchat as a regular binary on your
+development host. It substitutes Xous's IPC and PDDB primitives
+with stub implementations suitable for unit and integration
+testing. Useful for fast iteration on protocol logic that does
+not depend on hardware.
+
+```bash
+cd ~/xous-build/xous-signal-client
+
+cargo build --features hosted
+cargo test --features hosted --lib                       # 153 tests
+cargo test --features hosted --test wifi_flap_recovery   # 6 tests
+```
+
+Expected result: 153 lib + 6 integration = 159 tests pass.
+
+To run sigchat itself in hosted mode (for manual exploration of
+non-hardware-dependent paths):
+```bash
+cargo run --features hosted
+```
+
+## Renode mode
+
+Renode is a CPU emulator that runs a full Xous system image
+including the FPGA's peripherals. It supports gdb-stub debug,
+deterministic reproduction of hardware behavior in many cases,
+and faster iteration than physical-hardware flash cycles.
+
+**Note (unverified)**: Renode-mode end-to-end testing of the
+sigchat link flow against a stand-in TAP-host was not run during
+2026-05-04 demo validation. Renode usage for this project is
+captured in upstream xous-core's
+[Renode docs](https://github.com/tunnell/xous-core/blob/dev/docs/renode.md)
+and in this repo's `tools/measure-renode.sh`. The
+`feat/renode-test-flag` branch on `tunnell/xous-signal-client`
+contains a feature-gated TAP-host harness that bypasses the WiFi
++ user-input gating to enable scripted scenarios; that branch is
+not merged into `main`.
+
+For Renode bring-up:
+1. Install Renode v1.16+ following upstream's instructions.
+2. Build the Renode image:
+   ```bash
+   cd ~/xous-build/xous-core
+   cargo xtask renode-image
+   ```
+3. Run with the appropriate `.resc`:
+   ```bash
+   renode emulation/xous-release.resc
+   ```
+
+## Precursor hardware
+
+This is the primary target for end-to-end demo validation.
+
+### Build the sigchat binary
+
+```bash
+cd ~/xous-build/xous-signal-client
+
+cargo build --release \
+    --target=riscv32imac-unknown-xous-elf \
+    --bin xous-signal-client \
+    --features precursor
+```
+
+The build produces
+`target/riscv32imac-unknown-xous-elf/release/xous-signal-client`
+(unstripped, ~93 MB; DWARF retained per the
+`[profile.release] debug = true; strip = false`
+in `Cargo.toml` for hardware GDB attach).
+
+### Build the xous.img image
+
+```bash
+cd ~/xous-build/xous-core
+
+cargo xtask app-image \
+    sigchat:../xous-signal-client/target/riscv32imac-unknown-xous-elf/release/xous-signal-client \
+    vault \
+    --gdb-stub
+```
+
+`--gdb-stub` enables the kernel debug subsystem. It is
+load-bearing if you want to attach `riscv-none-elf-gdb` against
+a wedged process on hardware. Verify the flag took effect:
+```bash
+strings target/riscv32imac-unknown-xous-elf/release/xous.img \
+    | grep QStartNoAckMode
+```
+Empty output means `--gdb-stub` did not take effect; rebuild.
+
+### Flash via Raspberry Pi
+
+The current setup uses a Raspberry Pi attached to the Precursor
+over USB as a flash bridge. The script
+`raspberry_for_signal_debugging/flash-via-pi.sh` (in the
+xous-signal-client-notes repo, not this one) handles the scp +
+remote `usb_update.py --bounce` invocation. Adapt to your local
+setup; the essential operations are:
+
+```bash
+# Transfer the image to the host running usb_update.py
+scp ~/xous-build/xous-core/target/riscv32imac-unknown-xous-elf/release/xous.img \
+    pi@<flash-host>:~/xous-flash/
+
+# On the flash host (where Precursor is USB-connected):
+cd ~/xous-flash
+python3 usb_update.py -k xous.img --bounce
+```
+
+The flash takes ~22 minutes. The Precursor reboots itself when
+the flash completes.
+
+If you don't have a Pi setup: use the Precursor's USB connection
+directly from the laptop with `usb_update.py` (script available
+in [betrusted-scripts](https://github.com/betrusted-io/betrusted-scripts)).
+Same `-k xous.img --bounce` arguments.
+
+### Demo procedure
+
+After flashing iter-A.2.7+ on a Precursor with already-initialized
+PDDB and configured WiFi credentials:
+
+1. Boot. Wait ~30s for kernel + services to start.
+2. Enter your PIN to unlock PDDB.
+3. From shellchat: `wlan status`. Confirm WiFi is `Connected`.
+4. (Optional, for GDB) From shellchat: `console app`. This
+   redirects the FPGA UART mux from kernel-log to APP UART
+   where the gdb-stub serves. Skip this step if you are not
+   planning to GDB attach.
+5. Press **Home** (`∴`) to return to launcher.
+6. Open **sigchat**.
+7. Select **Link** from the radiobutton modal.
+8. Type a device name in the modal and accept.
+9. The QR-scan instruction screen appears with **four steps**:
+   ```
+   1. Open Signal on your phone
+   2. Tap into settings, then tap `Linked Devices`
+   3. Tap ⊕ or `Link New Device` and scan
+   4. Press any key here after scanning
+   ```
+10. On your phone: in Signal, scan the QR code displayed on
+    the Precursor.
+11. **On the phone, decline "transfer old conversations"**.
+    Tap "Skip" or equivalent. Conversation-archive transfer
+    is not supported in the current scope.
+12. **On the Precursor, press any key** to dismiss the QR
+    modal. The link flow advances to credentials persist.
+13. Wait ~10-30 seconds for credentials persist + key
+    generation + prekey upload. The status updates as
+    sigchat progresses through the link phases.
+14. Watch for `Signal online` to display on the Precursor.
+
+#### Multi-attempt expectation
+
+The link typically completes within **1-2 attempts**. The first
+attempt may crash during the 18-key credentials persist (PDDB
+FastSpace pressure). If this happens:
+
+- The device may auto-reboot or become unresponsive.
+- **Do not run `pddb dictdelete sigchat.account`** between
+  attempts. The defensive parsing in `Account::read` reads the
+  partial-state residue from the failed attempt without
+  panicking, and `Account::link`'s `set_new` calls overwrite
+  the partial keys correctly on the second attempt.
+- Power-cycle if the device is unresponsive, otherwise
+  navigate back to sigchat and retry from step 6.
+
+The second attempt typically succeeds. If after 3+ attempts
+without success: see Troubleshooting.
+
+### GDB attach (optional)
+
+After step 4 above (`console app`), you can attach
+`riscv-none-elf-gdb` to a Xous process via the FPGA UART. See
+the procedure document at
+`xous-signal-client-notes/_open-followups/procedures/2026-05-04-gdb-attach-procedure.md`
+in the notes repository for the full workflow including PID map
+(sigchat = PID 28), the `gdb-snapshot.sh` script, and known
+limitations (one snapshot per boot, monitor commands disabled).
+
+## Troubleshooting
+
+### `git clone` fails with `GnuTLS recv error`
+
+Slow or unstable network to GitHub. Use shallow clone:
+```bash
+git clone --depth 50 --single-branch --branch <ref> <url>
+```
+or rsync the repo from a working clone elsewhere.
+
+### `cargo build` fails on `riscv32imac-unknown-xous-elf` target
+
+The target should be installed automatically by xous-core's
+xtask the first time it's invoked. If you see
+`error: can't find crate for 'core'` or
+`the riscv32imac-unknown-xous-elf target may not be installed`,
+it means the xtask setup hasn't run. From `~/xous-build/xous-core`:
+```bash
+cargo xtask --help
+```
+should trigger the target install.
+
+### Flash fails with `usb.core.USBError: [Errno 32] Pipe error`
+
+Transient USB hiccup on the flash bridge. Retry the
+`usb_update.py` invocation. If repeated, hard power-cycle the
+Precursor and let it sit ~60-90s before retrying.
+
+### Link wedges or device crashes during link flow
+
+See "Multi-attempt expectation" above. The first attempt
+crashing is currently expected behavior; the second usually
+succeeds. If three or more attempts fail without progress:
+
+1. Check `wlan status` — confirm WiFi is still `Connected`.
+2. Hard power-cycle Precursor (60-90s off).
+3. Try once more. If it fails again, capture a UART log of
+   the boot + link attempt and attach to the issue tracker.
+
+### `pddb dictlist` shows leftover sigchat dicts
+
+Expected. PDDB persists across kernel reflash. The defensive
+parsing handles partial state, so leftover dicts from a prior
+build won't typically prevent linking. If you want a clean
+reset:
+```
+pddb dictdelete sigchat.account
+```
+followed by power-cycle is sufficient. Other `sigchat.*` dicts
+(identity, session, prekey, etc.) will be regenerated by
+`Account::link`.
+
+### "Signal online" reached but messages not sending/receiving
+
+iter-A.2.7's scope is the link flow. End-to-end message
+send/receive on Xous is partially implemented but not
+hardware-validated as part of this PR. Filed as follow-up.
+
+## Repository layout
+
+```
+xous-build/
+├── xous-core/                   # tunnell/xous-core branch dev
+│   ├── kernel/                  # Xous microkernel
+│   ├── services/                # PDDB, modals, gam, com, net, etc.
+│   ├── apps/sigchat/            # sigchat app shim (locales, manifest)
+│   ├── xtask/                   # build harness
+│   └── target/                  # build output (gitignored)
+└── xous-signal-client/          # tunnell/xous-signal-client branch main
+    ├── src/                     # sigchat source
+    ├── tests/                   # integration tests
+    ├── locales/i18n.json        # localized strings (incl. QR scan hint)
+    ├── BUILDING.md              # this file
+    └── target/                  # build output (gitignored)
+```
+
+## Reporting issues
+
+File issues on
+[`tunnell/xous-signal-client`](https://github.com/tunnell/xous-signal-client/issues).
+Include:
+- The branch / commit hash you built
+- Whether the build is hosted, Renode, or Precursor
+- For hardware: any UART log captured around the issue
+- For link-flow issues: which attempt number, and what state
+  the device was in when the issue occurred
