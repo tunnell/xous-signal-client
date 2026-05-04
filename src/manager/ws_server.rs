@@ -13,6 +13,8 @@
 //! with `libs/chat`'s event model — do not generalize this module to cover that case.
 
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -26,10 +28,13 @@ use xous_ipc::Buffer;
 use crate::manager::signal_ws::SignalWS;
 
 /// Max size of a single ProvisionEnvelope frame accepted from the server.
-/// 64 KiB is 16 pages — Signal's typical envelope is ~4KB; this gives 16x
-/// headroom for protocol evolution. Larger frames are rejected with an
-/// explicit error and the received size is logged for diagnostics.
-pub(crate) const WS_PROVISION_MAX: usize = 64 * 1024;
+/// 8 KiB is 2 pages — Signal's typical envelope is ~669 bytes; this gives
+/// 12× headroom while keeping the kernel multi-page IPC `map_memory` cost
+/// to 2 pages instead of 17 (the 64 KiB original triggered silent reboots
+/// inside `wait_and_take_binary`'s page mapping). Larger frames are
+/// rejected with an explicit error and the received size is logged for
+/// diagnostics.
+pub(crate) const WS_PROVISION_MAX: usize = 8 * 1024;
 
 /// Application-layer keepalive cadence. Signal's documented server-side idle
 /// timeout is ~60s; 25s leaves room for two Pings before the server drops us.
@@ -53,6 +58,13 @@ pub(crate) enum WsServerOp {
     /// `return_scalar(sender, 1)`, drains any parked waiter with
     /// `Cancelled`, and destroys its SID. Mirrors `WifiStateCallback::Drop`.
     Cancel = 1,
+    /// non-blocking scalar — sent by `CancelHandle::cancel_flap` when a
+    /// WiFi flap is observed mid-flight. Worker records `Cancelled` as
+    /// the pending result and stops driving the underlying WS (no more
+    /// reads, no more keepalives), but does NOT exit. Main retrieves
+    /// the Cancelled via `wait_and_take_binary`, then runs the normal
+    /// `Cancel` shutdown handshake.
+    FlapCancel = 2,
 }
 
 // Status codes serialized in WsResultBuf.status.
@@ -90,6 +102,40 @@ pub enum WsResult {
 
 pub struct SignalWsServer {
     cid: CID,
+    /// Dedup flag for `CancelHandle::cancel_flap` so multiple flap
+    /// observers (e.g. retry-loop + a stuck legacy listener) collapse
+    /// to a single non-blocking send.
+    flap_signaled: Arc<AtomicBool>,
+}
+
+/// Cheap cloneable cancellation handle for a `SignalWsServer`. Lets a
+/// flap-watcher thread interrupt the in-flight WS read without
+/// consuming the server. Multiple handles may exist; only the first
+/// `cancel_flap` send actually goes out (idempotent).
+#[derive(Clone)]
+pub struct CancelHandle {
+    cid: CID,
+    flap_signaled: Arc<AtomicBool>,
+}
+
+impl CancelHandle {
+    /// Send a non-blocking flap-cancel to the worker. The worker records
+    /// `Cancelled` as the pending result; the next `wait_and_take_binary`
+    /// returns `WsResult::Cancelled`. Idempotent — repeated calls
+    /// collapse to a single IPC.
+    ///
+    /// Does NOT shut the worker down. Main must still call
+    /// `SignalWsServer::cancel(self)` to complete the shutdown handshake.
+    pub fn cancel_flap(&self) {
+        if self.flap_signaled.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let _ = xous::send_message(
+            self.cid,
+            xous::Message::new_scalar(WsServerOp::FlapCancel as usize, 0, 0, 0, 0),
+        );
+    }
+
 }
 
 impl SignalWsServer {
@@ -106,7 +152,14 @@ impl SignalWsServer {
         builder
             .spawn(move || worker_loop(sid, ws, deadline_secs))
             .map_err(|e| io::Error::other(format!("thread spawn: {e}")))?;
-        Ok(Self { cid })
+        Ok(Self { cid, flap_signaled: Arc::new(AtomicBool::new(false)) })
+    }
+
+    /// Return a cheap cloneable handle for sending non-blocking
+    /// flap-cancels from another thread (e.g. a `FlapWatcher`'s
+    /// listener callback).
+    pub fn cancel_handle(&self) -> CancelHandle {
+        CancelHandle { cid: self.cid, flap_signaled: self.flap_signaled.clone() }
     }
 
     /// Block until the worker has a terminal result, then retrieve it. The
@@ -212,6 +265,10 @@ fn worker_loop(sid: SID, mut ws: SignalWS, deadline_secs: u64) {
     let mut last_send_at = tt.elapsed_ms();
     let mut pending: Option<PendingResult> = None;
     let mut waiter: Option<xous::MessageEnvelope> = None;
+    // Set on FlapCancel. Once set, the worker stops driving the
+    // underlying WS (no reads, no keepalives) and just waits for the
+    // main-thread Cancel handshake.
+    let mut flap_cancelled = false;
 
     loop {
         // (1) Non-blocking IPC service.
@@ -235,6 +292,15 @@ fn worker_loop(sid: SID, mut ws: SignalWS, deadline_secs: u64) {
                         }
                         break;
                     }
+                    Some(WsServerOp::FlapCancel) => {
+                        log::info!("ws_server: flap-cancel received; stopping ws drive");
+                        flap_cancelled = true;
+                        if pending.is_none() {
+                            pending = Some(PendingResult::Cancelled);
+                        }
+                        // Sent non-blocking; no return_scalar needed.
+                        // Don't break — wait for main's Cancel handshake.
+                    }
                     None => {
                         // Xous IPC is a trust boundary; any process with this
                         // SID can send any opcode. Log and continue — panicking
@@ -257,8 +323,12 @@ fn worker_loop(sid: SID, mut ws: SignalWS, deadline_secs: u64) {
             pending = Some(PendingResult::TimedOut);
         }
 
-        // (3) Application-layer keepalive.
-        if pending.is_none() && tt.elapsed_ms().saturating_sub(last_send_at) >= KEEPALIVE_MS {
+        // (3) Application-layer keepalive. Skipped after FlapCancel —
+        // the connection is presumed dead and pinging it would just
+        // log noise / overwrite the Cancelled pending result with Error.
+        if !flap_cancelled
+            && pending.is_none()
+            && tt.elapsed_ms().saturating_sub(last_send_at) >= KEEPALIVE_MS {
             match ws.send(Message::Ping(Vec::new())) {
                 Ok(()) => {
                     last_send_at = tt.elapsed_ms();
@@ -271,8 +341,9 @@ fn worker_loop(sid: SID, mut ws: SignalWS, deadline_secs: u64) {
             }
         }
 
-        // (4) Drive ws.read with the underlying 500ms timeout.
-        if pending.is_none() {
+        // (4) Drive ws.read with the underlying 500ms timeout. Skipped
+        // after FlapCancel for the same reason as keepalives.
+        if !flap_cancelled && pending.is_none() {
             match ws.read() {
                 Ok(Message::Binary(b)) => {
                     if b.len() > WS_PROVISION_MAX {
