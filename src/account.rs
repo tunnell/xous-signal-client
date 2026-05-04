@@ -98,41 +98,58 @@ impl Account {
     ) -> Result<Account, Error> {
         let pddb = pddb::Pddb::new();
         pddb.try_mount();
-        set(&pddb, pddb_dict, ACI_IDENTITY_PRIVATE_KEY, None)?;
-        set(&pddb, pddb_dict, ACI_IDENTITY_PUBLIC_KEY, None)?;
-        set(&pddb, pddb_dict, ACI_SERVICE_ID_KEY, None)?;
-        set(&pddb, pddb_dict, DEVICE_ID_KEY, Some("0"))?;
-        set(&pddb, pddb_dict, ENCRYPTED_DEVICE_NAME_KEY, None)?;
-        set(&pddb, pddb_dict, HOST_KEY, Some(&host.to_string()))?;
-        set(
+
+        // Pre-link 20-key account-defaults init. Apply bug #2 fix's
+        // set_new + batch-sync pattern here too — see chore "Fresh-dict
+        // vs existing-dict matters on Precursor PDDB" §. The original
+        // 20× `set` (delete_key + get + write + sync per call)
+        // wedges under FastSpace pressure on fresh dict. Replace with
+        // explicit delete_key for None-semantic fields (clears stale on
+        // existing dict; no-op on fresh) + set_new for Some-semantic
+        // fields (no per-call sync) + single durability sync at end.
+
+        // 13 None-semantic fields: explicit delete_key clears stale
+        // values on existing-dict path; no-op (NotFound, ignored) on
+        // fresh dict.
+        let _ = pddb.delete_key(pddb_dict, ACI_IDENTITY_PRIVATE_KEY, None);
+        let _ = pddb.delete_key(pddb_dict, ACI_IDENTITY_PUBLIC_KEY, None);
+        let _ = pddb.delete_key(pddb_dict, ACI_SERVICE_ID_KEY, None);
+        let _ = pddb.delete_key(pddb_dict, ENCRYPTED_DEVICE_NAME_KEY, None);
+        let _ = pddb.delete_key(pddb_dict, NUMBER_KEY, None);
+        let _ = pddb.delete_key(pddb_dict, PASSWORD_KEY, None);
+        let _ = pddb.delete_key(pddb_dict, PIN_MASTER_KEY_KEY, None);
+        let _ = pddb.delete_key(pddb_dict, PNI_IDENTITY_PRIVATE_KEY, None);
+        let _ = pddb.delete_key(pddb_dict, PNI_IDENTITY_PUBLIC_KEY, None);
+        let _ = pddb.delete_key(pddb_dict, PNI_SERVICE_ID_KEY, None);
+        let _ = pddb.delete_key(pddb_dict, PROFILE_KEY_KEY, None);
+        let _ = pddb.delete_key(pddb_dict, STORAGE_KEY_KEY, None);
+        let _ = pddb.delete_key(pddb_dict, STORE_MANIFEST_KEY, None);
+
+        // 7 Some-semantic fields: set_new (no delete_key, no sync).
+        set_new(&pddb, pddb_dict, DEVICE_ID_KEY, Some("0"))?;
+        set_new(&pddb, pddb_dict, HOST_KEY, Some(&host.to_string()))?;
+        set_new(
             &pddb,
             pddb_dict,
             IS_MULTI_DEVICE_KEY,
             Some(&false.to_string()),
         )?;
-        set(&pddb, pddb_dict, NUMBER_KEY, None)?;
-        set(&pddb, pddb_dict, PASSWORD_KEY, None)?;
-        set(&pddb, pddb_dict, PIN_MASTER_KEY_KEY, None)?;
-        set(&pddb, pddb_dict, PNI_IDENTITY_PRIVATE_KEY, None)?;
-        set(&pddb, pddb_dict, PNI_IDENTITY_PUBLIC_KEY, None)?;
-        set(&pddb, pddb_dict, PNI_SERVICE_ID_KEY, None)?;
-        set(&pddb, pddb_dict, PROFILE_KEY_KEY, None)?;
-        set(&pddb, pddb_dict, REGISTERED_KEY, Some(&false.to_string()))?;
-        set(
+        set_new(&pddb, pddb_dict, REGISTERED_KEY, Some(&false.to_string()))?;
+        set_new(
             &pddb,
             pddb_dict,
             SERVICE_ENVIRONMENT_KEY,
             Some(&service_environment.to_string()),
         )?;
-        set(&pddb, pddb_dict, STORAGE_KEY_KEY, None)?;
-        set(
-            &pddb,
-            pddb_dict,
-            STORE_LAST_RECEIVE_TIMESTAMP_KEY,
-            Some("0"),
-        )?;
-        set(&pddb, pddb_dict, STORE_MANIFEST_VERSION_KEY, Some("-1"))?;
-        set(&pddb, pddb_dict, STORE_MANIFEST_KEY, None)?;
+        set_new(&pddb, pddb_dict, STORE_LAST_RECEIVE_TIMESTAMP_KEY, Some("0"))?;
+        set_new(&pddb, pddb_dict, STORE_MANIFEST_VERSION_KEY, Some("-1"))?;
+
+        // Single durability point for the pre-link batch.
+        pddb.sync().map_err(|e| {
+            log::warn!("Account::new: pre-link sync failed: {e:?}");
+            Error::new(ErrorKind::Other, "PDDB sync failed after Account::new init")
+        })?;
+
         Account::read(pddb_dict)
     }
 
@@ -355,32 +372,54 @@ impl Account {
             );
         }
 
-        self.set(PASSWORD_KEY, Some(&password))?;
-        self.set(DEVICE_ID_KEY, Some(&response.device_id.to_string()))?;
-        self.set(ACI_IDENTITY_PRIVATE_KEY, Some(&aci.djb_private_key.key))?;
-        self.set(ACI_IDENTITY_PUBLIC_KEY, Some(&aci.djb_identity_key.key))?;
-        self.set(ACI_SERVICE_ID_KEY, Some(&aci.service_id))?;
-        self.set(PNI_IDENTITY_PRIVATE_KEY, Some(&pni.djb_private_key.key))?;
-        self.set(PNI_IDENTITY_PUBLIC_KEY, Some(&pni.djb_identity_key.key))?;
-        self.set(PNI_SERVICE_ID_KEY, Some(&pni.service_id))?;
-        self.set(ENCRYPTED_DEVICE_NAME_KEY, Some(&encrypted_name))?;
-        self.set(IS_MULTI_DEVICE_KEY, Some(&true.to_string()))?;
-        self.set(NUMBER_KEY, Some(&provisioning_msg.number))?;
-        self.set(PROFILE_KEY_KEY, Some(profile_key_b64))?;
+        // Persist all post-link account credentials. We use `set_new`
+        // (not `set`) because every key here is being written for the
+        // first time on this account: either the dict was empty before
+        // link, or the user cleaned it before re-linking. `set_new`
+        // skips the per-call `delete_key` and per-call `sync()`,
+        // halving the PDDB IPC count and removing the cumulative
+        // watchdog pressure that caused mid-link silent reboots.
+        // A single `pddb.sync()` after this batch makes the whole
+        // credentials set durable in one flush. See bug #2 in
+        // `xous-signal-client-notes/_open-followups/2026-05-02-demo-arc-bugs.md`
+        // for the discovery arc.
+        self.set_new(PASSWORD_KEY, Some(&password))?;
+        self.set_new(DEVICE_ID_KEY, Some(&response.device_id.to_string()))?;
+        self.set_new(ACI_IDENTITY_PRIVATE_KEY, Some(&aci.djb_private_key.key))?;
+        self.set_new(ACI_IDENTITY_PUBLIC_KEY, Some(&aci.djb_identity_key.key))?;
+        self.set_new(ACI_SERVICE_ID_KEY, Some(&aci.service_id))?;
+        self.set_new(PNI_IDENTITY_PRIVATE_KEY, Some(&pni.djb_private_key.key))?;
+        self.set_new(PNI_IDENTITY_PUBLIC_KEY, Some(&pni.djb_identity_key.key))?;
+        self.set_new(PNI_SERVICE_ID_KEY, Some(&pni.service_id))?;
+        self.set_new(ENCRYPTED_DEVICE_NAME_KEY, Some(&encrypted_name))?;
+        self.set_new(IS_MULTI_DEVICE_KEY, Some(&true.to_string()))?;
+        self.set_new(NUMBER_KEY, Some(&provisioning_msg.number))?;
+        self.set_new(PROFILE_KEY_KEY, Some(profile_key_b64))?;
         if let Some(aep) = provisioning_msg.account_entropy_pool.as_deref() {
-            self.set(ACCOUNT_ENTROPY_POOL_KEY, Some(aep))?;
+            self.set_new(ACCOUNT_ENTROPY_POOL_KEY, Some(aep))?;
         }
-        self.set(REGISTRATION_ID_KEY, Some(&registration_id.to_string()))?;
-        self.set(
+        self.set_new(REGISTRATION_ID_KEY, Some(&registration_id.to_string()))?;
+        self.set_new(
             PNI_REGISTRATION_ID_KEY,
             Some(&pni_registration_id.to_string()),
         )?;
-        self.set(STORAGE_KEY_KEY, None)?;
-        self.set(STORE_LAST_RECEIVE_TIMESTAMP_KEY, Some("0"))?;
-        self.set(STORE_MANIFEST_VERSION_KEY, Some("-1"))?;
-        self.set(STORE_MANIFEST_KEY, None)?;
+        self.set_new(STORAGE_KEY_KEY, None)?;
+        self.set_new(STORE_LAST_RECEIVE_TIMESTAMP_KEY, Some("0"))?;
+        self.set_new(STORE_MANIFEST_VERSION_KEY, Some("-1"))?;
+        self.set_new(STORE_MANIFEST_KEY, None)?;
 
-        self.set(REGISTERED_KEY, Some(&true.to_string()))?;
+        self.set_new(REGISTERED_KEY, Some(&true.to_string()))?;
+
+        // Single durability point for the credentials batch. Runs
+        // before any subsequent network call (the post-link
+        // `PUT /v1/accounts/attributes` below) so that if a power
+        // loss happens between this sync and the network call, the
+        // local state is at least consistent with what the server
+        // already committed in `PUT /v1/devices/link` above.
+        self.pddb.sync().map_err(|e| {
+            log::warn!("post-link credentials sync failed: {e:?}");
+            Error::new(ErrorKind::Other, "PDDB sync failed after credentials persist")
+        })?;
 
         // Save prekey private-key records to pddb stores so incoming messages
         // can be decrypted. Must happen AFTER a successful REST link (above).
@@ -542,6 +581,74 @@ impl Account {
             Err(e) => Err(e),
         }
     }
+
+    /// Persist a *freshly-created* PDDB key/value pair and mirror it
+    /// into the in-memory `Account` field.
+    ///
+    /// **Precondition (caller's responsibility):** the key must not
+    /// already exist in `self.pddb_dict`. Unlike [`set`], this method
+    /// omits the `delete_key` prelude and the per-call `pddb.sync()`,
+    /// so:
+    ///
+    /// - If the key already has a longer prior value, the new value
+    ///   is **merged into the head of the old value** rather than
+    ///   replacing it (PDDB writes are position-based, not
+    ///   truncating). This is a correctness bug in any caller that
+    ///   uses `set_new` on a possibly-existing key.
+    /// - The PDDB write is **not durable** until the caller invokes
+    ///   `self.pddb.sync()`. A power loss between this call and the
+    ///   caller's eventual `sync()` loses the value.
+    ///
+    /// `set_new` exists specifically for `Manager::link()`'s
+    /// post-link credentials persistence, where ~18 keys are written
+    /// in tight succession into a fresh-or-just-cleaned dict. The
+    /// per-call `sync()` in `set` was the cause of bug #2 (cumulative
+    /// PDDB IPC pressure → watchdog reset). Batching all 18 writes
+    /// behind a single `sync()` and skipping the redundant
+    /// `delete_key` cuts IPC count roughly 3×. Discovery arc:
+    /// `xous-signal-client-notes/_open-followups/2026-05-02-demo-arc-bugs.md`
+    /// (bug #2) and `2026-05-02-jtag-recv_slice-debug.md` (iter-1..iter-3).
+    ///
+    /// Do **not** use this helper outside the link path, and do not
+    /// reuse it for update-or-create semantics — call `set` instead.
+    fn set_new(&mut self, key: &str, value: Option<&str>) -> Result<(), Error> {
+        let owned_value = value.map(str::to_string);
+        match set_new(&self.pddb, &self.pddb_dict, key, value) {
+            Ok(()) => match key {
+                ACI_IDENTITY_PRIVATE_KEY => Ok(self.aci_identity_private = owned_value),
+                ACI_IDENTITY_PUBLIC_KEY => Ok(self.aci_identity_public = owned_value),
+                ACI_SERVICE_ID_KEY => Ok(self.aci_service_id = owned_value),
+                DEVICE_ID_KEY => Ok(self.device_id = owned_value.unwrap().parse().unwrap()),
+                ENCRYPTED_DEVICE_NAME_KEY => Ok(self.encrypted_device_name = owned_value),
+                IS_MULTI_DEVICE_KEY => {
+                    Ok(self.is_multi_device = owned_value.unwrap().parse().unwrap())
+                }
+                NUMBER_KEY => Ok(self.number = owned_value),
+                PASSWORD_KEY => Ok(self.password = owned_value),
+                PIN_MASTER_KEY_KEY => Ok(self.pin_master_key = owned_value),
+                PNI_IDENTITY_PRIVATE_KEY => Ok(self.pni_identity_private = owned_value),
+                PNI_IDENTITY_PUBLIC_KEY => Ok(self.pni_identity_public = owned_value),
+                PNI_SERVICE_ID_KEY => Ok(self.pni_service_id = owned_value),
+                PROFILE_KEY_KEY => Ok(self.profile_key = owned_value),
+                REGISTERED_KEY => Ok(self.registered = owned_value.unwrap().parse().unwrap()),
+                SERVICE_ENVIRONMENT_KEY => Ok(self.service_environment =
+                    ServiceEnvironment::from_str(&value.unwrap()).unwrap()),
+                STORAGE_KEY_KEY => Ok(self.storage_key = owned_value),
+                ACCOUNT_ENTROPY_POOL_KEY
+                | REGISTRATION_ID_KEY
+                | PNI_REGISTRATION_ID_KEY
+                | STORE_LAST_RECEIVE_TIMESTAMP_KEY
+                | STORE_MANIFEST_VERSION_KEY
+                | STORE_MANIFEST_KEY => Ok(()),
+                _ => {
+                    log::warn!("invalid key: {key}");
+                    let _ = &self.pddb.delete_key(&self.pddb_dict, &key, None);
+                    Err(Error::from(ErrorKind::NotFound))
+                }
+            },
+            Err(e) => Err(e),
+        }
+    }
 }
 
 fn log_identity_chain(label: &str, private_key: &PrivateKey, expected_pub_b64url: &str) {
@@ -614,6 +721,20 @@ fn set(pddb: &Pddb, dict: &str, key: &str, value: Option<&str>) -> Result<(), Er
             },
             Err(e) => log::warn!("failed to set pddb {}:{}  {:?}", dict, key, e),
         };
+    }
+    Ok(())
+}
+
+/// Lower-level fresh-key write. See [`Account::set_new`] for the
+/// precondition contract: this skips the `delete_key` prelude and
+/// the per-call `pddb.sync()` that [`set`] does, so the caller
+/// must guarantee the key does not already exist and must invoke
+/// `pddb.sync()` once after the batch to make the writes durable.
+fn set_new(pddb: &Pddb, dict: &str, key: &str, value: Option<&str>) -> Result<(), Error> {
+    log::info!("set_new '{}' = '{:?}'", key, value);
+    if let Some(value) = value {
+        let mut pddb_key = pddb.get(dict, key, None, true, true, None, None::<fn()>)?;
+        pddb_key.write(value.as_bytes())?;
     }
     Ok(())
 }
