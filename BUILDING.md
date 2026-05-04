@@ -165,49 +165,71 @@ binary. Adding `--bin xous-signal-client` then errors with
 binary (see the comment above the gate for the underlying
 `gam::APP_NAME_SIGCHAT` problem).
 
-**The link flow itself is not exercised in hosted mode.**
-Selecting **Link** in the on-device menu, displaying the QR
-code, and scanning it from a phone is documented as a
-**Precursor (hardware) procedure** in the "Demo procedure"
-section below. There is no in-tree mock of the Signal
-provisioning protocol; an actual link requires a real Signal
-account, a phone running Signal, and `signal-cli` on the dev
-host. Hosted mode is the iteration path for the protocol /
-logic layers *after* a successful hardware link has produced
-the credentials snapshot.
+**Linking in hosted mode (with a preserved host-target binary).**
+If you have a host-target sigchat ELF built before the `[[bin]]`
+`precursor` gate was added (see "Open work" below), the link
+flow runs end-to-end in hosted mode against the real
+`chat.signal.org`:
 
-The Family-2 hosted-mode helper scripts (`tools/scan-send.sh`,
-`tools/scan-receive.sh`, `tools/demo-prep.sh`) drive sigchat
-via `cargo xtask run sigchat:<binary>` from xous-core. They
-have two prerequisites that a fresh clone does not produce:
+```bash
+cd ~/xous-build/xous-core
+DISPLAY=<viewable-display> cargo xtask run \
+    sigchat:<absolute-path-to-host-target-xous-signal-client>
+```
 
-1. A pre-captured PDDB snapshot of an already-linked device,
-   expected at
-   `xous-core/tools/pddb-images/hosted-linked-display-verified.bin`.
-   That directory ships with only a `.keep` placeholder by
-   design — snapshots contain real Signal account credentials
-   and are user-generated from a successful Precursor link.
-   Configure the path via `XSC_PDDB_IMAGE` in `tools/.env`.
-2. A host-target sigchat ELF at
-   `target/release/xous-signal-client`. **This binary is not
-   buildable from a clean checkout today**: the `[[bin]]` in
-   `Cargo.toml` requires the `precursor` feature (which
-   targets `riscv32imac-unknown-xous-elf`), and the `hosted`
-   feature deliberately omits `gam/hosted` because forwarding
-   it triggers an infinite `register_ux` lend_mut loop in
-   hosted-mode gam (IPC format mismatch — see the comment
-   above the `[[bin]]` gate in `Cargo.toml`). Re-enabling a
-   buildable host-target binary is open work.
+`DISPLAY`: the legacy helpers (`tools/scan-{send,receive}.sh`,
+`tools/ui-driving/start_and_navigate.sh`) default to `:10` or
+`localhost:10.0`. On some hosts that's a headless Xvfb — sigchat
+runs but no window renders. Confirm with
+`xdpyinfo` / `xwininfo -root -tree`; the minifb window's title
+is "Precursor" (336×536). On X11-forwarded SSH sessions, use
+whichever display has a real X server behind it (cross-check
+`/tmp/.X11-unix/` and `ss -ltn | grep 60`).
 
-The full Family-2 procedure (signal-cli priming, X11-driven
-UI navigation, leg-1/leg-2 wire and parse verification) is
-documented in `tests/README.md`.
+What works end-to-end: provisioning WS connect, QR
+`device_link_uri` emit, `ProvisionMessage` decode after phone
+scan, 18-key credentials persist (typically first-attempt
+success on hosted — the multi-attempt expectation in "Demo
+procedure" below is a Precursor-hardware behavior tied to PDDB
+FastSpace pressure), signed-prekey + kyber-last-resort save,
+authenticated main WS, and prekey replenish.
+
+**Caution:** the resulting xtask log contains real Signal
+credentials (account number, ACI/PNI UUIDs, identity private
+keys, password, profile key). Treat as sensitive — do not paste
+into issues / chat / external systems; `shred -u` when
+finished.
+
+The Family-2 helper scripts (`tools/scan-send.sh`,
+`tools/scan-receive.sh`, `tools/demo-prep.sh`) wrap this same
+`cargo xtask run sigchat:<binary>` invocation with signal-cli
+priming and X11 input driving, and additionally need a
+pre-captured PDDB snapshot of an already-linked device at
+`xous-core/tools/pddb-images/hosted-linked-display-verified.bin`
+(only a `.keep` placeholder ships; configure via
+`XSC_PDDB_IMAGE` in `tools/.env`). The full Family-2 procedure
+is documented in `tests/README.md`.
+
+**Open work — rebuilding the host-target binary.** From a fresh
+clone, `cargo build --features hosted --bin xous-signal-client`
+errors with `requires the features: 'precursor'` because the
+`[[bin]]` declares `required-features = ["precursor"]`. The gate
+exists to stop `cargo test --features hosted --tests` from
+accidentally building the binary (see the comment above the gate
+for the underlying `gam::APP_NAME_SIGCHAT` problem). Until that
+gate is replaced, only preserved binaries (e.g. cached in an
+existing `target/release/`) can drive the hosted-mode link flow
+above. The `hosted` feature list in `Cargo.toml` itself — with
+`gam/hosted` deliberately omitted to avoid the infinite
+`register_ux` lend_mut loop — is correct as-is; see the
+`gam/hosted` workaround report in the notes repo.
 
 For agents/contributors validating that a fresh clone builds
 and the test suite passes, **the bootstrap + build + test
-sequence above is the documented stopping point**. Anything
-beyond it (interactive sigchat, link flow, send/receive E2E)
-needs hardware, real Signal accounts, or both.
+sequence above is the documented stopping point**. The
+hosted-mode link procedure documented here requires a preserved
+host-target ELF and a real Signal account, neither of which a
+clean checkout produces.
 
 ## Renode mode
 
