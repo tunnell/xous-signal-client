@@ -59,8 +59,9 @@ section). The infrastructure is preserved for future use.
 
 1. Install the Rust toolchain xous-core uses (see `xous-core`'s
    own README for the pinned toolchain). The project pins to
-   `dev-for-xous-signal-client` of `tunnell/xous-core` for path
-   dependencies — see `TESTING-PLAN.md` Pre-flight.
+   the `dev` branch of `tunnell/xous-core` for path
+   dependencies — see `BUILDING.md` and `TESTING-PLAN.md`
+   Pre-flight.
 2. (Optional, for E2E) Install `signal-cli`, set up two test Signal
    accounts, link them, and populate `tools/.env`. See
    `tools/test-env.example` for the configuration template.

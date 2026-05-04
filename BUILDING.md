@@ -140,16 +140,26 @@ sigchat ELF. Re-run only if `apps/manifest.json` changes.
 cd ~/xous-build/xous-signal-client
 
 cargo build --features hosted                            # library
-cargo test --features hosted --lib                       # 153 tests
-cargo test --features hosted --test wifi_flap_recovery   # 6 tests
+cargo test --features hosted --lib                       # 153 pass, 13 ignored
+cargo test --features hosted --test wifi_flap_recovery   # 6 pass
 ```
 
-Expected result: 153 lib + 6 integration = 159 tests pass.
+Expected result: 153 lib + 6 integration = 159 tests pass. The
+13 ignored lib tests require a Xous IPC server / hosted-mode
+runtime (only available when launched via `cargo xtask run`)
+and are skipped under plain `cargo test`; this is expected, not
+a misconfiguration.
 
 ### Running sigchat itself in hosted mode
 
 `cargo run --features hosted` from xous-signal-client does
-**not** work directly. The `[[bin]]` in `Cargo.toml` declares
+**not** work directly. Bare `cargo run --features hosted`
+errors with `could not determine which binary to run … available
+binaries: test_stores, xous-signal-client` because
+`src/bin/test_stores.rs` is auto-discovered as a second
+binary. Adding `--bin xous-signal-client` then errors with
+`target xous-signal-client … requires the features: precursor`
+— the `[[bin]]` in `Cargo.toml` declares
 `required-features = ["precursor"]` to stop `cargo test
 --features hosted --tests` from accidentally building the
 binary (see the comment above the gate for the underlying
