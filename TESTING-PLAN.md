@@ -22,27 +22,30 @@ git branch --show-current   # confirm intended branch
 git status                  # working tree state matches expectations
 
 cd ~/workdir/xous-core
-git branch --show-current   # must be dev-for-xous-signal-client
+git branch --show-current   # must be dev
 ```
 
 If anything looks wrong, stop and report before doing anything else.
 
-**xous-core branch is critical.** Other branches pin `root-keys` to
-`curve25519-dalek = "=4.1.2"` while this project's patched fork
-provides 4.1.3 — cargo fails with a dependency resolution error that
-looks like a project bug but is environment misconfiguration. If on
-the wrong branch:
+**xous-core branch is critical.** `dev` carries the
+`curve25519-dalek = "4.1.3"` patch this project's `root-keys`
+path dependency requires; other branches (notably `main`) pin
+`=4.1.2` and cargo fails with a dependency resolution error that
+looks like a project bug but is environment misconfiguration.
+`dev-for-xous-signal-client` was the historical home for this
+patch and remains usable but is now behind `dev`; new work
+should target `dev`. If on the wrong branch:
 
 ```bash
 cd ~/workdir/xous-core
-git checkout dev-for-xous-signal-client
+git checkout dev
 ```
 
 ## Required checks before reporting "done"
 
 ### Check 1: Build succeeds for Xous target
 
-**Prerequisite:** xous-core on `dev-for-xous-signal-client` (see Pre-flight).
+**Prerequisite:** xous-core on `dev` (see Pre-flight).
 
 ```bash
 cd ~/workdir/xous-signal-client

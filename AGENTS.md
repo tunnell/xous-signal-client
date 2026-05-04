@@ -35,12 +35,15 @@ now distinct. Practical implications:
   toolchain (downloads a betrusted-io fork of the Rust compiler with
   pre-built std).
 
-- **`xous-core` checked out on branch `dev-for-xous-signal-client`.**
-  This is non-negotiable — other branches pin `root-keys` to
-  `curve25519-dalek = "=4.1.2"` which conflicts with this project's
-  requirement of 4.1.3. The branch carries several local patches; see
-  `~/workdir/xous-signal-client-notes/techContext.md` for the patch
-  table with upstream-PR tracking.
+- **`xous-core` checked out on branch `dev`.** This is
+  non-negotiable — other branches (notably `main`) pin `root-keys`
+  to `curve25519-dalek = "=4.1.2"` which conflicts with this
+  project's requirement of 4.1.3. The `dev` branch carries the
+  4.1.3 patch and several other local patches; see
+  `~/workdir/xous-signal-client-notes/techContext.md` for the
+  patch table with upstream-PR tracking.
+  `dev-for-xous-signal-client` was the historical home for these
+  patches and remains usable but is now behind `dev`.
 
 - **`signal-cli`** for end-to-end testing. Linked to one of the test
   accounts as a secondary device.
@@ -176,9 +179,9 @@ In particular:
 
 - `betrusted-io/xous-core` is an upstream dependency. Local patches
   needed by this project are carried on the locally-pinned branch
-  (currently `dev-for-xous-signal-client`) and tracked via PRs
-  against `tunnell/xous-core` (the project's fork). They are NOT
-  pushed to or PR'd against `betrusted-io/xous-core`.
+  (currently `dev`) and tracked via PRs against `tunnell/xous-core`
+  (the project's fork). They are NOT pushed to or PR'd against
+  `betrusted-io/xous-core`.
 - The same rule applies to any other dependency repo (signal-cli,
   libsignal, etc.) referenced during work.
 - If a change to an upstream repo seems valuable for the wider
