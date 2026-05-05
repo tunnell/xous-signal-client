@@ -16,10 +16,9 @@
 //! is fully tested with mock stores.
 
 use super::credentials::{AccountCredentials, CREDENTIALS_KEY};
-use super::migration::{
-    has_any_legacy_value, migrate_from_legacy, LegacyKeyReader, LEGACY_KEYS,
-};
+use super::migration::{migrate_from_legacy, LegacyKeyReader, LEGACY_KEYS};
 use pddb::Pddb;
+use std::collections::HashMap;
 use std::io::{Error, ErrorKind, Read, Write};
 
 /// One-stop trait for the orchestration logic. Consolidates the blob
@@ -186,11 +185,19 @@ pub(crate) fn read_or_migrate<S: CredentialsStore>(
     }
 
     // 2. Legacy.
-    if !has_any_legacy_value(store) {
+    //
+    // Read every legacy key in ONE pass into an in-memory snapshot,
+    // then run `migrate_from_legacy` against the snapshot. This
+    // replaces the prior two-pass shape (`has_any_legacy_value` →
+    // `migrate_from_legacy`) which could re-read each key twice
+    // (~46 PDDB IPCs in the worst case). Single-pass = at most 23
+    // PDDB reads on a one-time-per-device migration.
+    let snapshot = read_legacy_snapshot(store);
+    if snapshot.is_empty() {
         return Ok((None, LoadOutcome::Fresh));
     }
-
-    let creds = migrate_from_legacy(store);
+    let snapshot_reader = SnapshotReader { snapshot: &snapshot };
+    let creds = migrate_from_legacy(&snapshot_reader);
     let bytes = creds
         .serialize()
         .map_err(|e| Error::new(ErrorKind::Other, format!("serialize migrated creds: {e}")))?;
@@ -206,6 +213,29 @@ pub(crate) fn read_or_migrate<S: CredentialsStore>(
     store.sync()?;
 
     Ok((Some(creds), LoadOutcome::MigratedFromLegacy))
+}
+
+/// Read every known legacy key from `reader` into an in-memory map.
+/// Absent keys are omitted; the returned map's emptiness is the
+/// "fresh state" signal.
+fn read_legacy_snapshot<R: LegacyKeyReader>(reader: &R) -> HashMap<&'static str, String> {
+    LEGACY_KEYS
+        .iter()
+        .filter_map(|k| reader.read(k).map(|v| (*k, v)))
+        .collect()
+}
+
+/// `LegacyKeyReader` impl backed by an in-memory snapshot. Lets
+/// `read_or_migrate` route the unchanged `migrate_from_legacy`
+/// function over a HashMap instead of re-reading PDDB.
+struct SnapshotReader<'a> {
+    snapshot: &'a HashMap<&'static str, String>,
+}
+
+impl<'a> LegacyKeyReader for SnapshotReader<'a> {
+    fn read(&self, key: &str) -> Option<String> {
+        self.snapshot.get(key).cloned()
+    }
 }
 
 /// Persist `creds` under the blob key and call sync.
@@ -534,6 +564,103 @@ mod tests {
         let (creds_b, outcome_b) = read_or_migrate(&store).unwrap();
         assert_eq!(outcome_b, LoadOutcome::LoadedFromBlob);
         assert_eq!(creds_a, creds_b);
+    }
+
+    #[test]
+    fn read_legacy_snapshot_empty_when_no_keys() {
+        let store = MockStore::new();
+        let snapshot = read_legacy_snapshot(&store);
+        assert!(snapshot.is_empty());
+    }
+
+    #[test]
+    fn read_legacy_snapshot_collects_only_present_keys() {
+        use crate::account::migration::{
+            ACI_SERVICE_ID_KEY, DEVICE_ID_KEY, HOST_KEY,
+        };
+        let store = MockStore::new();
+        store
+            .put_legacy(ACI_SERVICE_ID_KEY, "uuid")
+            .put_legacy(DEVICE_ID_KEY, "5")
+            .put_legacy(HOST_KEY, "signal.org");
+        let snapshot = read_legacy_snapshot(&store);
+        assert_eq!(snapshot.len(), 3);
+        assert_eq!(snapshot.get(ACI_SERVICE_ID_KEY).map(String::as_str), Some("uuid"));
+        assert_eq!(snapshot.get(DEVICE_ID_KEY).map(String::as_str), Some("5"));
+        assert_eq!(snapshot.get(HOST_KEY).map(String::as_str), Some("signal.org"));
+    }
+
+    #[test]
+    fn snapshot_reader_round_trips_through_migrate() {
+        // The single-pass optimization: read PDDB once into a
+        // snapshot, run migrate_from_legacy against the snapshot.
+        // This test confirms the snapshot path produces the same
+        // AccountCredentials as a direct migration would.
+        use crate::account::migration::{
+            migrate_from_legacy, ACI_SERVICE_ID_KEY, DEVICE_ID_KEY, HOST_KEY,
+            IS_MULTI_DEVICE_KEY, REGISTERED_KEY,
+        };
+        let store = MockStore::new();
+        store
+            .put_legacy(ACI_SERVICE_ID_KEY, "uuid")
+            .put_legacy(DEVICE_ID_KEY, "7")
+            .put_legacy(HOST_KEY, "signal.org")
+            .put_legacy(IS_MULTI_DEVICE_KEY, "true")
+            .put_legacy(REGISTERED_KEY, "true");
+
+        let direct = migrate_from_legacy(&store);
+
+        let snapshot = read_legacy_snapshot(&store);
+        let snapshot_reader = SnapshotReader { snapshot: &snapshot };
+        let via_snapshot = migrate_from_legacy(&snapshot_reader);
+
+        assert_eq!(direct, via_snapshot);
+    }
+
+    #[test]
+    fn read_or_migrate_path_matches_direct_migration() {
+        // End-to-end: the optimization should produce identical
+        // AccountCredentials as the prior two-pass shape would
+        // have.
+        use crate::account::migration::{
+            migrate_from_legacy, ACCOUNT_ENTROPY_POOL_KEY, ACI_IDENTITY_PRIVATE_KEY,
+            ACI_SERVICE_ID_KEY, DEVICE_ID_KEY, HOST_KEY, IS_MULTI_DEVICE_KEY,
+            PASSWORD_KEY, REGISTERED_KEY, REGISTRATION_ID_KEY, SERVICE_ENVIRONMENT_KEY,
+        };
+        let store = MockStore::new();
+        store
+            .put_legacy(ACI_IDENTITY_PRIVATE_KEY, "private")
+            .put_legacy(ACI_SERVICE_ID_KEY, "uuid")
+            .put_legacy(ACCOUNT_ENTROPY_POOL_KEY, "aep")
+            .put_legacy(DEVICE_ID_KEY, "5")
+            .put_legacy(HOST_KEY, "signal.org")
+            .put_legacy(IS_MULTI_DEVICE_KEY, "true")
+            .put_legacy(PASSWORD_KEY, "pw")
+            .put_legacy(REGISTERED_KEY, "true")
+            .put_legacy(REGISTRATION_ID_KEY, "999")
+            .put_legacy(SERVICE_ENVIRONMENT_KEY, "Staging");
+
+        let (creds, outcome) = read_or_migrate(&store).unwrap();
+        let creds = creds.unwrap();
+        assert_eq!(outcome, LoadOutcome::MigratedFromLegacy);
+
+        // Now build the same legacy state in a fresh mock and run
+        // the direct migrate. Should equal the snapshot-driven
+        // result above.
+        let direct_store = MockStore::new();
+        direct_store
+            .put_legacy(ACI_IDENTITY_PRIVATE_KEY, "private")
+            .put_legacy(ACI_SERVICE_ID_KEY, "uuid")
+            .put_legacy(ACCOUNT_ENTROPY_POOL_KEY, "aep")
+            .put_legacy(DEVICE_ID_KEY, "5")
+            .put_legacy(HOST_KEY, "signal.org")
+            .put_legacy(IS_MULTI_DEVICE_KEY, "true")
+            .put_legacy(PASSWORD_KEY, "pw")
+            .put_legacy(REGISTERED_KEY, "true")
+            .put_legacy(REGISTRATION_ID_KEY, "999")
+            .put_legacy(SERVICE_ENVIRONMENT_KEY, "Staging");
+        let direct = migrate_from_legacy(&direct_store);
+        assert_eq!(creds, direct);
     }
 
     #[test]

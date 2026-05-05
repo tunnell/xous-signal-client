@@ -90,13 +90,6 @@ pub(crate) const DEFAULT_HOST: &str = "signal.org";
 /// unparseable.
 pub(crate) const DEFAULT_SERVICE_ENVIRONMENT: &str = "Live";
 
-/// True if at least one legacy key has a value. Used to decide
-/// whether migration applies (vs. a fresh state where no legacy
-/// keys exist).
-pub(crate) fn has_any_legacy_value<R: LegacyKeyReader>(reader: &R) -> bool {
-    LEGACY_KEYS.iter().any(|k| reader.read(k).is_some())
-}
-
 /// Read every legacy key via `reader` and produce an
 /// `AccountCredentials`. Defensive: parse failures default the
 /// affected field rather than propagating an error, mirroring the
@@ -421,25 +414,6 @@ mod tests {
         assert_eq!(creds.store_manifest_version, -1);
         // Valid host preserved.
         assert_eq!(creds.host, "192.168.100.1");
-    }
-
-    #[test]
-    fn has_any_legacy_value_false_when_empty() {
-        let reader = MockReader::new();
-        assert!(!has_any_legacy_value(&reader));
-    }
-
-    #[test]
-    fn has_any_legacy_value_true_with_one_field() {
-        let mut reader = MockReader::new();
-        reader.put(DEVICE_ID_KEY, "0");
-        assert!(has_any_legacy_value(&reader));
-    }
-
-    #[test]
-    fn has_any_legacy_value_true_when_fully_linked() {
-        let reader = MockReader::fully_linked();
-        assert!(has_any_legacy_value(&reader));
     }
 
     #[test]

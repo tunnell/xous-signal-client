@@ -7,16 +7,14 @@
 #![deny(clippy::panic)]
 
 use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
-use futures::executor::block_on;
 use libsignal_protocol::{
-    GenericSignedPreKey, KeyPair as DjbKeyPair, KyberPreKeyId, KyberPreKeyRecord,
-    KyberPreKeyStore, PreKeyId, PreKeyRecord, PreKeyStore, PrivateKey, SignedPreKeyId,
-    SignedPreKeyRecord, SignedPreKeyStore, Timestamp, kem,
+    GenericSignedPreKey, KeyPair as DjbKeyPair, KyberPreKeyId, KyberPreKeyRecord, PreKeyId,
+    PreKeyRecord, PrivateKey, SignedPreKeyId, SignedPreKeyRecord, Timestamp, kem,
 };
 use rand::{RngCore, TryRngCore as _, rngs::OsRng};
 use std::io::{Error, ErrorKind, Read, Write};
 
-use crate::manager::stores::{PddbKyberPreKeyStore, PddbPreKeyStore, PddbSignedPreKeyStore};
+use crate::manager::stores::pddb_write_no_sync;
 
 /// Medium.MAX_VALUE (2^24 - 1) — the upper bound for Signal's prekey IDs.
 const MEDIUM_MAX: u32 = 0x00FF_FFFF;
@@ -94,34 +92,74 @@ pub fn generate_prekeys(
 /// Persist prekey private-key records to the pddb stores used by main_ws.
 /// Must be called after the link REST call returns 200 — calling before that
 /// risks persisting keys that were never uploaded (e.g. if the link fails).
+///
+/// IPC density: pre-fix, each of the 4 records went through
+/// `PddbStore::save_*_pre_key` → `pddb_write_binary` which did
+/// `delete_key + get + write + sync` (4 IPCs and a sync per record),
+/// for a total of ~16 IPCs and **4 syncs**. Same anti-pattern as the
+/// pre-#47 18-key credentials persist; flagged in the link-flow stage
+/// budget as "MED — sibling bug #3 candidate" (issue #51 sibling).
+///
+/// Post-fix: serialize all 4 records first, write them with no
+/// per-call `sync()`, then issue **one sync at the end** of the
+/// batch. ~9 IPCs, 1 sync. Same set_new + batch sync lever as #47
+/// applied to a different burst.
+///
+/// Records are written by direct `pddb_write_no_sync` rather than
+/// going through the libsignal trait (`save_signed_pre_key` /
+/// `save_kyber_pre_key`) — bypassing the trait lets us defer the
+/// sync to the end of the batch without changing the trait
+/// contract (which post-link rotation paths still rely on per-call
+/// durability for).
 pub fn save_to_pddb(prekeys: &Prekeys) -> Result<(), Error> {
-    let pddb_spk = pddb::Pddb::new();
-    pddb_spk.try_mount();
-    let pddb_kpk = pddb::Pddb::new();
-    pddb_kpk.try_mount();
+    let pddb = pddb::Pddb::new();
+    pddb.try_mount();
 
-    let mut spk_store = PddbSignedPreKeyStore::new(pddb_spk, SIGNED_PREKEY_DICT);
-    let mut kpk_store = PddbKyberPreKeyStore::new(pddb_kpk, KYBER_PREKEY_DICT);
-
+    // Serialize all 4 records before touching PDDB so any encoding
+    // failures land before we open any handles.
     let aci_spk_id = prekeys.aci_signed_record.id().map_err(map_signal_err)?;
-    block_on(spk_store.save_signed_pre_key(aci_spk_id, &prekeys.aci_signed_record))
-        .map_err(map_signal_err)?;
+    let aci_spk_bytes = prekeys.aci_signed_record.serialize().map_err(map_signal_err)?;
+    let pni_spk_id = prekeys.pni_signed_record.id().map_err(map_signal_err)?;
+    let pni_spk_bytes = prekeys.pni_signed_record.serialize().map_err(map_signal_err)?;
+    let aci_kpk_id = prekeys.aci_kyber_record.id().map_err(map_signal_err)?;
+    let aci_kpk_bytes = prekeys.aci_kyber_record.serialize().map_err(map_signal_err)?;
+    let pni_kpk_id = prekeys.pni_kyber_record.id().map_err(map_signal_err)?;
+    let pni_kpk_bytes = prekeys.pni_kyber_record.serialize().map_err(map_signal_err)?;
+
+    pddb_write_no_sync(
+        &pddb,
+        SIGNED_PREKEY_DICT,
+        &format!("{}", u32::from(aci_spk_id)),
+        &aci_spk_bytes,
+    )?;
     log::info!("prekeys: saved aci signed prekey id={}", u32::from(aci_spk_id));
 
-    let pni_spk_id = prekeys.pni_signed_record.id().map_err(map_signal_err)?;
-    block_on(spk_store.save_signed_pre_key(pni_spk_id, &prekeys.pni_signed_record))
-        .map_err(map_signal_err)?;
+    pddb_write_no_sync(
+        &pddb,
+        SIGNED_PREKEY_DICT,
+        &format!("{}", u32::from(pni_spk_id)),
+        &pni_spk_bytes,
+    )?;
     log::info!("prekeys: saved pni signed prekey id={}", u32::from(pni_spk_id));
 
-    let aci_kpk_id = prekeys.aci_kyber_record.id().map_err(map_signal_err)?;
-    block_on(kpk_store.save_kyber_pre_key(aci_kpk_id, &prekeys.aci_kyber_record))
-        .map_err(map_signal_err)?;
+    pddb_write_no_sync(
+        &pddb,
+        KYBER_PREKEY_DICT,
+        &format!("{}", u32::from(aci_kpk_id)),
+        &aci_kpk_bytes,
+    )?;
     log::info!("prekeys: saved aci kyber last-resort id={}", u32::from(aci_kpk_id));
 
-    let pni_kpk_id = prekeys.pni_kyber_record.id().map_err(map_signal_err)?;
-    block_on(kpk_store.save_kyber_pre_key(pni_kpk_id, &prekeys.pni_kyber_record))
-        .map_err(map_signal_err)?;
+    pddb_write_no_sync(
+        &pddb,
+        KYBER_PREKEY_DICT,
+        &format!("{}", u32::from(pni_kpk_id)),
+        &pni_kpk_bytes,
+    )?;
     log::info!("prekeys: saved pni kyber last-resort id={}", u32::from(pni_kpk_id));
+
+    pddb.sync()
+        .map_err(|e| Error::new(ErrorKind::Other, format!("post-prekey sync: {e}")))?;
 
     Ok(())
 }
@@ -153,9 +191,25 @@ pub struct OneTimePreKeyBatch {
 }
 
 /// Generate `count` fresh X25519 one-time EC prekeys, persist each
-/// to the `sigchat.prekey` PDDB dict via [`PddbPreKeyStore`], and
-/// advance the persisted ACI counter. IDs wrap modulo `MEDIUM_MAX`
-/// so id 0 is never used (Signal protocol rule).
+/// to the `sigchat.prekey` PDDB dict, and advance the persisted ACI
+/// counter. IDs wrap modulo `MEDIUM_MAX` so id 0 is never used
+/// (Signal protocol rule).
+///
+/// IPC density: pre-fix, each of the `count` records went through
+/// `PddbPreKeyStore::save_pre_key` → `pddb_write_binary` (4 IPCs +
+/// `sync`), plus the trailing `write_prekey_counter` (4 IPCs +
+/// `sync`). For `count = PRE_KEY_BATCH_SIZE = 100`, that is **~400
+/// IPCs and 101 syncs** — flagged as "HIGH risk, potential bug #4"
+/// in the link-flow stage budget; the largest single PDDB-burst
+/// site in the receive flow.
+///
+/// Post-fix: write each record with no per-call `sync()`, then
+/// inline the counter write (also no sync), then issue **one sync
+/// at the end** of the entire batch. Drops to ~301 IPCs and 1
+/// sync. We bypass [`PddbPreKeyStore::save_pre_key`] and call
+/// [`pddb_write_no_sync`] directly to defer the sync without
+/// changing the libsignal trait contract that consume-time deletes
+/// (`remove_pre_key`) still rely on for per-call durability.
 ///
 /// Persistence happens BEFORE the caller uploads — if the upload
 /// later fails, the records remain in PDDB and the next replenish
@@ -173,7 +227,6 @@ pub fn generate_one_time_prekeys(count: u32) -> Result<OneTimePreKeyBatch, Error
     pddb.try_mount();
 
     let start_id = read_or_init_prekey_counter(&pddb)?;
-    let mut store = PddbPreKeyStore::new(pddb::Pddb::new(), PREKEY_DICT);
     let mut rng = OsRng.unwrap_err();
 
     let mut json = Vec::with_capacity(count as usize);
@@ -187,7 +240,9 @@ pub fn generate_one_time_prekeys(count: u32) -> Result<OneTimePreKeyBatch, Error
         let public_serialized = kp.public_key.serialize();
         let record = PreKeyRecord::new(PreKeyId::from(id), &kp);
 
-        block_on(store.save_pre_key(PreKeyId::from(id), &record)).map_err(map_signal_err)?;
+        let buf = record.serialize().map_err(map_signal_err)?;
+        pddb_write_no_sync(&pddb, PREKEY_DICT, &format!("{}", id), &buf)
+            .map_err(|e| Error::new(ErrorKind::Other, format!("prekey {} write: {e}", id)))?;
 
         json.push(OneTimePreKeyJson {
             key_id: id,
@@ -195,7 +250,13 @@ pub fn generate_one_time_prekeys(count: u32) -> Result<OneTimePreKeyBatch, Error
         });
     }
 
-    write_prekey_counter(&pddb, next)?;
+    // Counter write — also batched, no per-call sync.
+    write_prekey_counter_no_sync(&pddb, next)?;
+
+    // Single durability point for the entire 100+1-key batch.
+    pddb.sync()
+        .map_err(|e| Error::new(ErrorKind::Other, format!("post-replenish sync: {e}")))?;
+
     log::info!(
         "prekeys: generated {} one-time EC prekeys (id range {}..={}, next={})",
         count, start_id, json.last().map(|j| j.key_id).unwrap_or(start_id), next,
@@ -226,7 +287,10 @@ fn read_or_init_prekey_counter(pddb: &pddb::Pddb) -> Result<u32, Error> {
     Ok(seed)
 }
 
-fn write_prekey_counter(pddb: &pddb::Pddb, next: u32) -> Result<(), Error> {
+/// Write the persistent ACI prekey-id counter WITHOUT syncing.
+/// Caller is responsible for issuing a single `pddb.sync()` at the
+/// end of whatever batch this is part of.
+fn write_prekey_counter_no_sync(pddb: &pddb::Pddb, next: u32) -> Result<(), Error> {
     let s = format!("{}", next);
     pddb.delete_key(ACCOUNT_DICT, ACI_NEXT_PREKEY_ID_KEY, None).ok();
     let mut h = pddb
@@ -234,6 +298,14 @@ fn write_prekey_counter(pddb: &pddb::Pddb, next: u32) -> Result<(), Error> {
         .map_err(|e| Error::new(ErrorKind::Other, format!("counter get: {e}")))?;
     h.write_all(s.as_bytes())
         .map_err(|e| Error::new(ErrorKind::Other, format!("counter write: {e}")))?;
+    Ok(())
+}
+
+/// Write the counter and sync. Used by the seed-fresh path in
+/// [`read_or_init_prekey_counter`] which is a single-key write
+/// outside any batch.
+fn write_prekey_counter(pddb: &pddb::Pddb, next: u32) -> Result<(), Error> {
+    write_prekey_counter_no_sync(pddb, next)?;
     pddb.sync().ok();
     Ok(())
 }

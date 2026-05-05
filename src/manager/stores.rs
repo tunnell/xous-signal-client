@@ -177,10 +177,34 @@ fn pddb_read_binary(pddb: &pddb::Pddb, dict: &str, key: &str) -> std::io::Result
     Ok(buf)
 }
 
-fn pddb_write_binary(pddb: &pddb::Pddb, dict: &str, key: &str, data: &[u8]) -> std::io::Result<()> {
+/// Write `data` at `dict:key` WITHOUT issuing a `pddb.sync()`. Caller
+/// is responsible for syncing once at the end of the batch.
+///
+/// Use case: the link-time burst writes (`prekeys::save_to_pddb`,
+/// `prekeys::generate_one_time_prekeys`) where many records land in
+/// tight succession. Per-call `sync` is the dominant cost under
+/// FastSpace pressure (see the bug #2 arc and the link-flow stage
+/// budget — same lever as the credentials-blob refactor in
+/// `account/storage.rs`, applied to per-key stores that can't be
+/// trivially blobbed because they're consumed individually).
+///
+/// Steady-state per-message writes (e.g. `store_session`) should
+/// continue to use [`pddb_write_binary`] so each individual write is
+/// durable on its own.
+pub(crate) fn pddb_write_no_sync(
+    pddb: &pddb::Pddb,
+    dict: &str,
+    key: &str,
+    data: &[u8],
+) -> std::io::Result<()> {
     pddb.delete_key(dict, key, None).ok();
     let mut handle = pddb.get(dict, key, None, true, true, None, None::<fn()>)?;
     handle.write_all(data)?;
+    Ok(())
+}
+
+fn pddb_write_binary(pddb: &pddb::Pddb, dict: &str, key: &str, data: &[u8]) -> std::io::Result<()> {
+    pddb_write_no_sync(pddb, dict, key, data)?;
     pddb.sync().ok();
     Ok(())
 }
