@@ -1,3 +1,5 @@
+# Abandoned, use https://github.com/tunnell/xous-app-signal
+
 # xous-signal-client
 
 Unofficial Signal client for [Xous](https://github.com/betrusted-io/xous-core)
