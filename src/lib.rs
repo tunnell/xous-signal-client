@@ -550,7 +550,7 @@ impl<'a> SigChat<'a> {
         self.modals.add_list_item("yes").expect("failed radio yes");
         self.modals.add_list_item("no").expect("failed radio no");
         self.modals
-            .get_radiobutton("Connect to WiFi?")
+            .get_radiobutton(t!("sigchat.wifi.connect_prompt", locales::LANG))
             .expect("failed radiobutton modal");
         match self.modals.get_radio_index() {
             Ok(button) => button == 0,

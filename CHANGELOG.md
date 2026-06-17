@@ -61,6 +61,41 @@ Changelog](https://keepachangelog.com/en/1.1.0/).
   follow-up PUT. Two new unit tests pin the new identifier format and
   the Clone serialization equivalence. Closes #16.
 
+### Fixed
+
+- First-run UX trap when WiFi is unprovisioned (issue #42, Session A
+  of the WiFi-trap fix plan). Four small changes that, together,
+  remove the unrecoverable state a first-time user encountered when
+  launching sigchat without a saved AP:
+  - `main.rs` now calls `gam.allow_mainmenu()` at startup. Previously
+    the Home key only escaped sigchat after pddb had unlocked
+    (which sets the global `allow_mainmenu` flag at
+    `services/pddb/src/main.rs:884, 954`); on a freshly-flashed
+    device with no PIN entered, Home did nothing and the user was
+    trapped. Calling here is idempotent against pddb's own call.
+  - The `close` menu item is no longer a `MenuOp::Noop`. New
+    `MenuOp::CloseApp` variant; the handler at `main.rs` calls
+    `gam.relinquish_focus()` so the user lands back in the launcher
+    while the sigchat process stays warm for fast re-focus.
+  - The hardcoded English `"Connect to WiFi?"` prompt at
+    `lib.rs:553` now routes through `t!()` with a new translation
+    key `sigchat.wifi.connect_prompt`.
+  - The misleading `sigchat.wifi.warning` text changed from "WiFi
+    not connected. Entering read-only mode" to "WiFi unavailable.
+    Some features disabled". The old text claimed the app was
+    entering read-only mode, but `Chat::read_only()` (defined at
+    `xous-core/libs/chat/src/lib.rs:174`) was never actually
+    invoked — the app just sat in its normal state with no
+    dialogue. Renaming is the smallest honest fix; implementing
+    real offline-browse via `Chat::read_only()` is tracked
+    separately as future work.
+
+  Sessions B and C of the fix plan are deferred (UI replacement of
+  the failure-state notification with a structured retry/help/exit
+  screen, and finer-grained failure-mode reporting). The plan
+  document is at
+  `~/workdir/xous-signal-client-notes/_open-followups/2026-05-01-wifi-trap-fix-plan.md`.
+
 ### Changed
 
 - Renamed the pinned `tunnell/xous-core` branch from
